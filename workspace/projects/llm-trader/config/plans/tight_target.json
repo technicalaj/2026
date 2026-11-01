@@ -1,0 +1,61 @@
+{
+  "costs": {
+    "model": {
+      "commission_multiplier": 1.0,
+      "slippage_multiplier": 1.0,
+      "spread_multiplier": 1.0,
+      "spread_source": "bar"
+    },
+    "symbols": {
+      "BTCUSD": {
+        "commission_per_lot": 0.0,
+        "slippage_points": 500.0,
+        "typical_spread_points": 2500.0
+      },
+      "XAUUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 5.0,
+        "typical_spread_points": 20.0
+      }
+    }
+  },
+  "data_requirement": "mt5_export",
+  "evaluation": {
+    "leak_cuts": 12,
+    "random_runs": 1000,
+    "seed": 7,
+    "win_epsilon_r": 0.05
+  },
+  "gate": {
+    "accuracy_bar": 0.8,
+    "max_p_value": 0.05,
+    "max_p_value_recent": 0.1,
+    "min_trades_holdout": 30,
+    "min_trades_recent": 10,
+    "require_positive_expectancy": true
+  },
+  "locked_at": "2026-11-01T21:19:08Z",
+  "params": {
+    "atr_period": 14,
+    "entry_hours": [
+      11,
+      16
+    ],
+    "max_hold_bars": 32,
+    "momentum_bars": 4,
+    "stop_atr": 2.0,
+    "target_r": 0.25
+  },
+  "rule_id": "tight_target",
+  "sha256": "b9a14043f76a6e74cfb54914dac9d5d6a84b4c416578a423a75f50671e52139a",
+  "symbols": [
+    "XAUUSD",
+    "BTCUSD"
+  ],
+  "timeframe": "M15",
+  "version": "1",
+  "windows": {
+    "holdout_months": 6,
+    "recent_months": 3
+  }
+}

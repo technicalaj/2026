@@ -1,0 +1,9 @@
+# Your MT5 exports (meta.json holds your broker's server name) and everything the app generates.
+# Leading slashes keep these to the project root, so the llm_trader/data package stays tracked.
+/data/
+/out/
+/.venv/
+/.env
+/config/settings.local.json
+__pycache__/
+.pytest_cache/

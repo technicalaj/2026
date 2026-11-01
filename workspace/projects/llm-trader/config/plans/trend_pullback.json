@@ -1,0 +1,63 @@
+{
+  "costs": {
+    "model": {
+      "commission_multiplier": 1.0,
+      "slippage_multiplier": 1.0,
+      "spread_multiplier": 1.0,
+      "spread_source": "bar"
+    },
+    "symbols": {
+      "EURUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 2.0,
+        "typical_spread_points": 6.0
+      },
+      "USDJPY": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 3.0,
+        "typical_spread_points": 8.0
+      }
+    }
+  },
+  "data_requirement": "mt5_export",
+  "evaluation": {
+    "leak_cuts": 12,
+    "random_runs": 1000,
+    "seed": 7,
+    "win_epsilon_r": 0.05
+  },
+  "gate": {
+    "accuracy_bar": 0.8,
+    "max_p_value": 0.05,
+    "max_p_value_recent": 0.1,
+    "min_trades_holdout": 30,
+    "min_trades_recent": 10,
+    "require_positive_expectancy": true
+  },
+  "locked_at": "2026-11-01T21:19:08Z",
+  "params": {
+    "atr_period": 14,
+    "cooldown_bars": 16,
+    "ema_fast": 20,
+    "ema_mid": 50,
+    "ema_slow": 200,
+    "max_hold_bars": 48,
+    "rsi_high": 75,
+    "rsi_low": 25,
+    "rsi_period": 14,
+    "stop_atr": 1.5,
+    "target_r": 2.0
+  },
+  "rule_id": "trend_pullback",
+  "sha256": "98c22ab6dbaefdf841fd7546db7cb364910bdba6662747068aac3e7340e709a4",
+  "symbols": [
+    "EURUSD",
+    "USDJPY"
+  ],
+  "timeframe": "M15",
+  "version": "1",
+  "windows": {
+    "holdout_months": 6,
+    "recent_months": 3
+  }
+}

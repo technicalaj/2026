@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Superagentic Agent Desk</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div id="app" aria-busy="true">
+  <p class="boot">Loading the agent desk…</p>
+  <noscript><p class="boot">This page needs JavaScript to show the agent desk.</p></noscript>
+</div>
+<script src="app.js"></script>
+<script>
+  // Served from "/" while the files live under /ui/: load them from there instead.
+  if (!window.__SUPERAGENTIC_UI__ && location.protocol !== 'file:') {
+    var css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = '/ui/app.css';
+    document.head.appendChild(css);
+    var js = document.createElement('script');
+    js.src = '/ui/app.js';
+    document.body.appendChild(js);
+  }
+</script>
+</body>
+</html>

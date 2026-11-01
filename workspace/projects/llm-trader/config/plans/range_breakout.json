@@ -1,0 +1,66 @@
+{
+  "costs": {
+    "model": {
+      "commission_multiplier": 1.0,
+      "slippage_multiplier": 1.0,
+      "spread_multiplier": 1.0,
+      "spread_source": "bar"
+    },
+    "symbols": {
+      "GBPUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 3.0,
+        "typical_spread_points": 9.0
+      },
+      "US500": {
+        "commission_per_lot": 0.0,
+        "slippage_points": 10.0,
+        "typical_spread_points": 50.0
+      },
+      "XAUUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 5.0,
+        "typical_spread_points": 20.0
+      }
+    }
+  },
+  "data_requirement": "mt5_export",
+  "evaluation": {
+    "leak_cuts": 12,
+    "random_runs": 1000,
+    "seed": 7,
+    "win_epsilon_r": 0.05
+  },
+  "gate": {
+    "accuracy_bar": 0.8,
+    "max_p_value": 0.05,
+    "max_p_value_recent": 0.1,
+    "min_trades_holdout": 30,
+    "min_trades_recent": 10,
+    "require_positive_expectancy": true
+  },
+  "locked_at": "2026-11-01T21:19:08Z",
+  "params": {
+    "atr_period": 14,
+    "entry_end_hour": 11,
+    "max_hold_bars": 32,
+    "min_range_bars": 20,
+    "range_end_hour": 7,
+    "range_start_hour": 0,
+    "stop_cap_atr": 1.5,
+    "target_r": 1.5
+  },
+  "rule_id": "range_breakout",
+  "sha256": "38a82ce1f0c1d798f5783354598d0377a521e66180083f68a7e5e422b6f295c2",
+  "symbols": [
+    "XAUUSD",
+    "GBPUSD",
+    "US500"
+  ],
+  "timeframe": "M15",
+  "version": "1",
+  "windows": {
+    "holdout_months": 6,
+    "recent_months": 3
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "data": {
+    "mode": "demo",
+    "demo_seed": 7,
+    "mt5_dir": "data/mt5",
+    "timeframe": "M15"
+  },
+  "windows": {
+    "holdout_months": 6,
+    "recent_months": 3
+  },
+  "gate": {
+    "accuracy_bar": 0.8,
+    "min_trades_holdout": 30,
+    "min_trades_recent": 10,
+    "max_p_value": 0.05,
+    "max_p_value_recent": 0.1,
+    "require_positive_expectancy": true
+  },
+  "evaluation": {
+    "random_runs": 1000,
+    "win_epsilon_r": 0.05,
+    "leak_cuts": 12,
+    "seed": 7
+  },
+  "costs": {
+    "spread_source": "bar",
+    "spread_multiplier": 1.0,
+    "slippage_multiplier": 1.0,
+    "commission_multiplier": 1.0,
+    "symbols": {
+      "XAUUSD": {"commission_per_lot": 7.0, "slippage_points": 5, "typical_spread_points": 20},
+      "EURUSD": {"commission_per_lot": 7.0, "slippage_points": 2, "typical_spread_points": 6},
+      "GBPUSD": {"commission_per_lot": 7.0, "slippage_points": 3, "typical_spread_points": 9},
+      "USDJPY": {"commission_per_lot": 7.0, "slippage_points": 3, "typical_spread_points": 8},
+      "US500": {"commission_per_lot": 0.0, "slippage_points": 10, "typical_spread_points": 50},
+      "BTCUSD": {"commission_per_lot": 0.0, "slippage_points": 500, "typical_spread_points": 2500},
+      "CTRL-SYN": {"commission_per_lot": 0.0, "slippage_points": 1, "typical_spread_points": 2}
+    }
+  },
+  "account": {
+    "balance": 1000.0,
+    "currency": "USD",
+    "leverage": 30
+  },
+  "risk": {
+    "risk_per_trade_pct": 1.0,
+    "max_open_risk_pct": 2.0,
+    "max_daily_loss_pct": 3.0,
+    "max_margin_use_pct": 50.0,
+    "max_positions_per_group": 1,
+    "high_correlation": 0.6,
+    "correlation_days": 90,
+    "forward_min_trades": 30,
+    "forward_max_trades": 40
+  },
+  "correlation_groups": [
+    {"id": "USD", "name": "US dollar", "members": {"EURUSD": -1, "GBPUSD": -1, "USDJPY": 1, "XAUUSD": -1}},
+    {"id": "RISK", "name": "Risk appetite (stocks and crypto)", "members": {"US500": 1, "BTCUSD": 1, "USDJPY": 1}}
+  ],
+  "llm": {
+    "model": "claude-opus-5-5",
+    "effort": "medium",
+    "max_tokens": 16000
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8765
+  }
+}

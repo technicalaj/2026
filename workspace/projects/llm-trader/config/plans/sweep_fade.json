@@ -1,0 +1,57 @@
+{
+  "costs": {
+    "model": {
+      "commission_multiplier": 1.0,
+      "slippage_multiplier": 1.0,
+      "spread_multiplier": 1.0,
+      "spread_source": "bar"
+    },
+    "symbols": {
+      "EURUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 2.0,
+        "typical_spread_points": 6.0
+      },
+      "XAUUSD": {
+        "commission_per_lot": 7.0,
+        "slippage_points": 5.0,
+        "typical_spread_points": 20.0
+      }
+    }
+  },
+  "data_requirement": "mt5_export",
+  "evaluation": {
+    "leak_cuts": 12,
+    "random_runs": 1000,
+    "seed": 7,
+    "win_epsilon_r": 0.05
+  },
+  "gate": {
+    "accuracy_bar": 0.8,
+    "max_p_value": 0.05,
+    "max_p_value_recent": 0.1,
+    "min_trades_holdout": 30,
+    "min_trades_recent": 10,
+    "require_positive_expectancy": true
+  },
+  "locked_at": "2026-11-01T21:19:08Z",
+  "params": {
+    "atr_period": 14,
+    "max_hold_bars": 16,
+    "min_day_bars": 16,
+    "stop_buffer_atr": 0.25,
+    "target_r": 1.0
+  },
+  "rule_id": "sweep_fade",
+  "sha256": "f53d010336d14ec15f2c75f16355186f15f074985dc97107eb01cab475432646",
+  "symbols": [
+    "XAUUSD",
+    "EURUSD"
+  ],
+  "timeframe": "M15",
+  "version": "1",
+  "windows": {
+    "holdout_months": 6,
+    "recent_months": 3
+  }
+}
