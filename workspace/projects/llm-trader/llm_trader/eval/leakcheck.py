@@ -37,7 +37,24 @@ def _first_difference(expected: list[tuple], got: list[tuple]) -> str | None:
     return None
 
 
-def leak_check(rule: SignalRule, df: pd.DataFrame, symbol: str, cuts: int = 12, seed: int = 0) -> tuple[bool, str]:
+def detectable_share(cuts_at_signals: int, signals: int, confidence: float = 0.95) -> float:
+    if signals and cuts_at_signals >= signals:
+        return 1.0 / signals
+    # A leak that changes a share f of the signals escapes k signal-bar cuts with probability (1 - f) ** k.
+    return 1.0 - (1.0 - confidence) ** (1.0 / max(cuts_at_signals, 1))
+
+
+def _coverage(k_signal: int, signals: int) -> str:
+    if not signals:
+        return "the rule gave no signals, so only random cut points were tested"
+    if k_signal >= signals:
+        return f"every one of its {signals:,} signal bars was a cut point, so a leak in any signal would have shown"
+    share = detectable_share(k_signal, signals)
+    return (f"{k_signal} of the cuts sat right on its {signals:,} signal bars, so a leak touching {share:.0%} or more of its "
+            "signals would have shown 95% of the time")
+
+
+def leak_check(rule: SignalRule, df: pd.DataFrame, symbol: str, cuts: int = 100, seed: int = 0) -> tuple[bool, str]:
     n = len(df)
     if n < 3 or cuts <= 0:
         return True, f"Not enough {symbol} data to test for future-data leaks."
@@ -46,11 +63,12 @@ def leak_check(rule: SignalRule, df: pd.DataFrame, symbol: str, cuts: int = 12, 
     signal_bars = np.unique(np.searchsorted(close_ns, [k[0] for k in full]))
     signal_bars = signal_bars[signal_bars < n - 1]
     rng = np.random.default_rng(seed)
-    # Half the cuts land exactly on signal bars, where a rule peeking at later bars is guaranteed to change.
-    k_signal = min(cuts // 2, len(signal_bars))
+    # Cutting right at a signal bar always exposes a rule that peeks at later bars for that signal; a few random cuts
+    # also catch signals that only appear once the data is cut short.
+    k_signal = min(cuts, len(signal_bars))
     at_signals = rng.choice(signal_bars, size=k_signal, replace=False) if k_signal else np.array([], dtype=np.int64)
     low = max(1, n // 10)
-    at_random = rng.integers(low, n - 1, size=cuts - k_signal)
+    at_random = rng.integers(low, n - 1, size=max(1, cuts // 10))
     cut_points = sorted(set(at_signals.tolist()) | set(at_random.tolist()))
     problems = []
     for cut in cut_points:
@@ -66,6 +84,6 @@ def leak_check(rule: SignalRule, df: pd.DataFrame, symbol: str, cuts: int = 12, 
             f"changed earlier signals ({problems[0]})."
         )
     return True, (
-        f"No future-data leak on {symbol}: {len(cut_points)} re-runs on data cut off early ({k_signal} right at "
-        "signal bars) reproduced every earlier signal exactly."
+        f"No future-data leak on {symbol}: {len(cut_points)} re-runs on data cut off early reproduced every earlier signal "
+        f"exactly; {_coverage(k_signal, len(signal_bars))}."
     )

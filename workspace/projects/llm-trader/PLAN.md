@@ -83,7 +83,7 @@ Alerts report what an EA did, never "take this trade": hand trades outside the r
 - **Spread, streak:** spread >2× the hour's median → skip; 3 full stops in a row → pause the rule.
 - **Changes:** ceilings (max lot, risk %, daily %, overall %) are Guardian inputs set by hand; files can only tighten them. Increases wait 24 h after YES; cuts apply at once.
 
-The Guardian enforces stops, loss stops and the kill switch inside MT5 even if Python is down, within 200 server requests a day (FTMO flags over 2,000; likely). Entry checks run in the trade panel (hand trades) and RiskGate (EAs with source); for compiled EAs the Guardian can close positions that break a hard limit (your YES). **Kill** (dashboard, chart button or `kill.flag`) blocks entries and deletes pending orders; **Flatten all** is a separate confirmed button; MT5's Algo Trading button is the backup; the MT5 phone app closes positions if the PC is down. Risk-reducing automatic actions need one standing YES; adding risk needs a YES each time.
+The Guardian enforces stops, loss stops and the kill switch inside MT5 even if Python is down, within 200 server requests a day (one large prop firm flags over 2,000; likely). Entry checks run in the trade panel (hand trades) and RiskGate (EAs with source); for compiled EAs the Guardian can close positions that break a hard limit (your YES). **Kill** (dashboard, chart button or `kill.flag`) blocks entries and deletes pending orders; **Flatten all** is a separate confirmed button; MT5's Algo Trading button is the backup; the MT5 phone app closes positions if the PC is down. Risk-reducing automatic actions need one standing YES; adding risk needs a YES each time.
 
 ## 3. Where things run
 
@@ -204,66 +204,57 @@ The Guardian protects your live account in two to three weeks. The earliest an A
 
 ## 9. Code layout
 
-Starred items are new; the rest exist today.
+What exists after the v1 build. Items marked *later* are planned.
 
 ```
 workspace/projects/llm-trader/
-  requirements.txt*
-  .gitignore*              data/*, out/, local/, logs/, *.db, *.parquet, .pytest_cache/
-  .env.example*            ANTHROPIC_API_KEY=, LLM_MODE=offline
+  README.md                how to run it (cloud and Windows), safety rules
+  requirements.txt  .env.example  .gitignore
   config/
-    settings.json          windows, gate, costs, risk
-    agents.json*           pinned model, stage, version per agent
-    plans/                 locked test plans
+    settings.json          windows, gate, costs, risk limits (§2), clusters
+    plans/                 locked test plans (hash covers params, settings, costs, risk and the rule's code)
+    approved.json          your typed YES: local only, gitignored
+    trials.json            trial log for the Holm correction: local only, gitignored
   llm_trader/
-    __main__.py*           CLI: demo, serve
-    models.py
-    costs.py               spread, commission, slippage (add swaps)
-    state.py*              dashboard state
-    server.py*             optional FastAPI, 127.0.0.1
-    data/synthetic.py      demo data
-    data/loader.py         CSV loading, UTC
-    data/symbols.py        symbol specs, min-lot maths
-    data/checks.py*        Data Steward
-    signals/               one file per rule agent
-    eval/backtest.py       simulation
-    eval/random_baseline.py  direction-matched (fix)
-    eval/gate.py           the 80% gate (extend)
-    eval/metrics.py        statistics
-    eval/leakcheck.py      leak test
-    eval/plans.py          plan locking
-    eval/windows.py
-    eval/run.py
-    eval/power.py*         gate power
-    eval/trials.py*        trial log, Holm
-    agents/registry.py*    team, lanes, stages
-    agents/event_risk.py*  event tagger
-    agents/regime.py*      tercile, trend
-    agents/supervisor.py*  decision rule, stage checks
-    agents/reporter.py*    daily report
-    llm/client.py*         schema, stop_reason, timeout, budget
-    llm/offline.py*        seeded mock answers
-    risk/engine.py*        portfolio limits
-    risk/feasibility.py*   min-lot table, Monte Carlo
-    risk/guardian_rules.py*  Guardian twin (Phase 1)
-    journal/store.py*      append-only SQLite (Phase 2)
-    journal/resolve.py*    outcomes from MT5 deals (Phase 2)
-    bridge/advisories.py*  pauses, expiry, no lots
-    ui/                    dashboard
+    __main__.py, cli.py    demo, run, serve, snapshot, lock, killswitch, approve, reject
+    pipeline.py            one full run -> out/state.json, report, bridge
+    state.py               dashboard state contract
+    server.py              dashboard on 127.0.0.1:8765, this computer only
+    snapshot.py            one self-contained out/dashboard.html
+    data/                  MT5 CSV loader (UTC), symbol specs, synthetic demo data
+    costs.py               spread, commission, slippage (swaps later)
+    signals/               one file per rule agent and self-test
+    eval/                  backtest, metrics, random baseline (same direction), gate,
+                           leak check, plans, windows, trials (Holm), robustness, power
+    supervisor/            stage checks, self-tests, decision summary
+    agents/                team registry and lanes, research agents, context (event tagger mock, regime)
+    risk/                  engine, limits, blackouts, min-lot feasibility, kill switch, approvals
+    bridge.py              advisories.json and kill.flag (pauses with expiry; no lots)
+    llm.py                 Claude client: offline by default, per-run cost cap
+    report.py              daily report (template; Claude only with a key)
+    ui/                    dashboard: index.html, app.css, app.js (no outside files)
+    later: journal/ (SQLite, Phase 2), Guardian rule twin (Phase 1), event tagger on Claude (Phase 4)
   mql5/
-    GUARDIAN_SPEC.md*      tonight
-    Guardian.mq5*          Phase 1
-    TradePanel.mq5*        Phase 2
-    CalendarExporter.mq5*  Phase 2
-    RiskGate.mqh*          Phase 3
-  tools/export_mt5_data.py read-only MT5 export
-  tests/                   suite + no-order, risk, Guardian, DST tests
-  local/ data/ out/        gitignored
+    GUARDIAN_SPEC.md       Guardian EA spec
+    later: Guardian.mq5 (Phase 1), TradePanel.mq5 and CalendarExporter.mq5 (Phase 2), RiskGate.mqh (Phase 3)
+  tools/
+    export_mt5_data.py     read-only MT5 export (Windows)
+    screenshot.mjs         dashboard screenshots
+  tests/                   466 tests, including no-order-code, risk, gate and server tests
+  data/ out/ local/        gitignored
 ```
 
 ## 10. Version 1 (overnight build)
 
 **Goal:** a clickable, honest skeleton of the team and the 80% gate, on the existing `llm_trader` engine and dashboard. No MT5, no API key, never trades.
+
+**Status, morning of 2026-11-02: built and tested (466 tests).** `python -m llm_trader demo` takes about 20 seconds.
+- **Results:** only the planted self-test qualifies (85% of 130 never-seen trades). Tight Target wins 82% and still fails, because it loses after costs and does no better than random. Leaky is blocked.
+- **Added beyond the list:** the gate-power chart, the rule's code inside every plan hash, and protection against forged requests to the local server.
+- **First open:** the dashboard is in safe mode until you approve the starting settings (chg-001) with YES. Your approvals and trial log stay on your computer.
+- **Real MT5 data:** a rule only counts if it was locked before its never-seen months, or if you truthfully declare those months unstudied: `python -m llm_trader lock RULE --unstudied-since YYYY-MM-DD --yes`.
+- **Not built yet:** DST checks, planted data faults, swaps.
+- **Kill switch:** it shows as simulated, because nothing in MT5 reads `kill.flag` until the Guardian EA exists.
 
 **Pages** (the seven existing tabs):
 1. **Team** (home): "SYNTHETIC DATA · AI OFFLINE · NO TRADING" banners; the first superagentic layout (supervisor on top; lanes for Data, Research, Context, Validation, Risk, Monitor, Report; cards with kind, model, stage, status, last output); simulated kill switch; "qualified picks today" (empty, with the reason); self-tests in their own panel.
@@ -333,5 +324,5 @@ Morning review: open `out/dashboard.html`, or the private preview page if shared
 - [LLM forecasters](https://proceedings.neurips.cc/paper_files/paper/2024/hash/6ed5bf446f59e2c6646d23058c86424b-Abstract.html), [headline sentiment](https://arxiv.org/abs/2304.07619), [narrow subtasks](https://arxiv.org/abs/2602.23330), [run-to-run variance](https://arxiv.org/abs/2602.18481), [maths errors](https://arxiv.org/pdf/2508.05201), [overconfidence](https://arxiv.org/pdf/2306.13063), [prompt injection](https://arxiv.org/pdf/2512.02261)
 - [lookahead test](https://arxiv.org/pdf/2512.23847v1), [memorization](https://arxiv.org/abs/2605.24564), [Deflated Sharpe](https://papers.ssrn.com/abstract=2460551)
 - [Opus 5.5 cutoff](https://platform.claude.com/docs/zh-CN/models/opus-5-5/overview), [deprecations](https://platform.claude.com/docs/en/resources/model-deprecations), [API billing](https://support.claude.com/en/articles/9876003-i-subscribe-to-claude-pro-why-do-i-have-to-pay-separately-for-api-usage-on-console), [plan API credits](https://platform.claude.com/docs/en/about-claude/api-credits-for-subscribers)
-- [MetaTrader5 package](https://pypi.org/project/MetaTrader5/), [one process per terminal](https://www.mql5.com/en/forum/351590), [return codes](https://mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes), [netting vs hedging](https://www.mql5.com/en/blogs/post/774939), [MQL5 calendar](https://mql5.com/en/docs/calendar/calendarvaluehistory), [MQL5 VPS](https://www.mql5.com/en/vps/forex-plans), [Windows VPS prices](https://hostadvice.com/vps/metatrader/), [FTMO rules](https://ftmo.oanda.com/forbidden-trading-practices/)
+- [MetaTrader5 package](https://pypi.org/project/MetaTrader5/), [one process per terminal](https://www.mql5.com/en/forum/351590), [return codes](https://mql5.com/en/docs/constants/errorswarnings/enum_trade_return_codes), [netting vs hedging](https://www.mql5.com/en/blogs/post/774939), [MQL5 calendar](https://mql5.com/en/docs/calendar/calendarvaluehistory), [MQL5 VPS](https://www.mql5.com/en/vps/forex-plans), [Windows VPS prices](https://hostadvice.com/vps/metatrader/), [prop-firm rules, one example](https://ftmo.oanda.com/forbidden-trading-practices/)
 - [CCXT](https://github.com/ccxt/ccxt/wiki/Manual), [CCXT release](https://www.piwheels.org/project/ccxt/), [crypto CFD rules](https://cointelegraph.com/news/crypto-derivatives-eu-regulations-esma), [ForexFactory feed](https://glama.ai/mcp/servers/atirek-pro/ForexFactory-MCP), [investingLive](https://investinglive.com/news/forexlive-rebrands-as-investinglive-to-reflect-broader-market-coverage-20250721), [CryptoPanic](https://cryptopanic.com/developers/api/about), [CFTC schedule](https://cftc.gov/MarketReports/CommitmentsofTraders/ReleaseSchedule/index.htm), [Myfxbook](https://myfxbook.com/lv/api), [CoinGlass](https://coinglass.com/pricing), [NewsAPI](https://newsapi.org/pricing)

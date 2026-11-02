@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,10 +15,18 @@ from llm_trader.models import iso
 from llm_trader.signals.base import SignalRule
 from llm_trader.signals.registry import all_rules
 
-DEFAULT_EVALUATION = {"random_runs": 1000, "win_epsilon_r": 0.05, "leak_cuts": 12, "seed": 7}
+DEFAULT_EVALUATION = {"random_runs": 1000, "leak_cuts": 100, "seed": 7}
 DATA_REQUIREMENT = "mt5_export"
-PLAN_FIELDS = ("rule_id", "version", "params", "symbols", "timeframe", "windows", "gate", "evaluation", "costs", "data_requirement")
+PLAN_FIELDS = (
+    "rule_id", "version", "origin", "params", "code_sha256", "symbols", "timeframe", "windows", "gate", "evaluation", "costs",
+    "risk_config_sha256", "data_requirement",
+)
+# Kept in the locked plan for the approvals workflow, but they do not change what the test measures.
+UNTESTED_FIELDS = ("origin", "risk_config_sha256")
+TEST_FIELDS = tuple(name for name in PLAN_FIELDS if name not in UNTESTED_FIELDS)
 HASH_EXCLUDED = ("sha256", "locked_at")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+FIELD_LABELS = {"code_sha256": "the rule's code"}
 
 
 def evaluation_config(settings: dict | None) -> dict:
@@ -37,9 +47,33 @@ def canonical_json(obj) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def sha256_json(obj) -> str:
+    return hashlib.sha256(canonical_json(obj).encode("utf-8")).hexdigest()
+
+
 def plan_hash(plan: dict) -> str:
-    body = {k: v for k, v in plan.items() if k not in HASH_EXCLUDED}
-    return hashlib.sha256(canonical_json(body).encode("utf-8")).hexdigest()
+    return sha256_json({k: v for k, v in plan.items() if k not in HASH_EXCLUDED})
+
+
+def trial_hash(plan: dict) -> str:
+    return sha256_json({name: plan.get(name) for name in TEST_FIELDS})
+
+
+def risk_config_hash(settings: dict | None) -> str:
+    return sha256_json((settings or {}).get("risk") or {})
+
+
+def _class_source(cls: type) -> str:
+    try:
+        # Line endings are normalised so a Windows checkout (CRLF) hashes the same as the cloud copy.
+        return Path(inspect.getsourcefile(cls)).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+    except (TypeError, OSError):
+        return f"source unavailable: {cls.__module__}.{cls.__qualname__}"
+
+
+def rule_code_hash(rule: SignalRule) -> str:
+    sources = {cls.__module__: _class_source(cls) for cls in type(rule).__mro__ if cls is not object}
+    return sha256_json(sources)
 
 
 def make_plan(rule: SignalRule, settings_subset: dict | None) -> dict:
@@ -47,7 +81,9 @@ def make_plan(rule: SignalRule, settings_subset: dict | None) -> dict:
     plan = {
         "rule_id": rule.rule_id,
         "version": rule.version,
+        "origin": rule.origin,
         "params": rule.params,
+        "code_sha256": rule_code_hash(rule),
         "symbols": list(rule.symbols),
         "timeframe": rule.timeframe,
         "windows": s["windows"],
@@ -57,15 +93,39 @@ def make_plan(rule: SignalRule, settings_subset: dict | None) -> dict:
             "model": cost_model_from_settings({"costs": s["costs"]}).describe(),
             "symbols": {sym: cost_settings(sym, s["costs"]) for sym in rule.symbols},
         },
+        "risk_config_sha256": risk_config_hash(settings_subset),
         "data_requirement": DATA_REQUIREMENT,
     }
     return json.loads(canonical_json(plan))
 
 
-def lock_plan(plan: dict, locked_at=None) -> dict:
-    body = {k: v for k, v in plan.items() if k not in HASH_EXCLUDED}
-    when = iso(locked_at) if locked_at is not None else iso(datetime.now(timezone.utc))
+def intact(plan: dict | None) -> bool:
+    return isinstance(plan, dict) and plan.get("sha256") == plan_hash(plan)
+
+
+def lock_plan(plan: dict, locked_at=None, previous: dict | None = None, unstudied_since=None) -> dict:
+    body = {k: v for k, v in plan.items() if k not in HASH_EXCLUDED and k != "unstudied_since"}
+    same_test = intact(previous) and trial_hash(previous) == trial_hash(body)
+    # Re-locking the same test (for example after a risk-only change) keeps its original lock time, so "locked before
+    # testing" keeps meaning when the test itself was fixed, not when the file was last written.
+    if locked_at is not None:
+        when = iso(locked_at)
+    elif same_test and previous.get("locked_at"):
+        when = previous["locked_at"]
+    else:
+        when = iso(datetime.now(timezone.utc))
+    declared = iso(unstudied_since) if unstudied_since is not None else plan.get("unstudied_since")
+    if declared is None and same_test:
+        declared = previous.get("unstudied_since")
+    if declared:
+        body["unstudied_since"] = declared
     return {**body, "sha256": plan_hash(body), "locked_at": when}
+
+
+def _shown(value) -> str:
+    if isinstance(value, str) and SHA256_PATTERN.match(value):
+        return value[:12]
+    return json.dumps(value)
 
 
 def _differences(old, new, path: str) -> list[str]:
@@ -76,7 +136,8 @@ def _differences(old, new, path: str) -> list[str]:
         return out
     if old == new:
         return []
-    return [f"{path} {json.dumps(old)} -> {json.dumps(new)}"]
+    label = FIELD_LABELS.get(path, path)
+    return [f"{label} {_shown(old)} -> {_shown(new)}"]
 
 
 def verify_plan(locked: dict | None, rule: SignalRule, settings_subset: dict | None) -> tuple[bool, str | None]:
@@ -118,8 +179,18 @@ def save_plan(plans_dir, plan: dict) -> Path:
     return path
 
 
-def lock_all_plans(settings: dict, plans_dir, rules: list[SignalRule] | None = None, locked_at=None) -> list[dict]:
-    locked = [lock_plan(make_plan(rule, settings), locked_at) for rule in (rules if rules is not None else all_rules())]
-    for plan in locked:
-        save_plan(plans_dir, plan)
-    return locked
+def previous_plan(plans_dir, rule_id: str) -> dict | None:
+    try:
+        return load_plan(plans_dir, rule_id)
+    except ValueError:
+        return None
+
+
+def lock_rule(rule: SignalRule, settings: dict, plans_dir, locked_at=None, unstudied_since=None) -> dict:
+    plan = lock_plan(make_plan(rule, settings), locked_at, previous_plan(plans_dir, rule.rule_id), unstudied_since)
+    save_plan(plans_dir, plan)
+    return plan
+
+
+def lock_all_plans(settings: dict, plans_dir, rules: list[SignalRule] | None = None, locked_at=None, unstudied_since=None) -> list[dict]:
+    return [lock_rule(rule, settings, plans_dir, locked_at, unstudied_since) for rule in (rules if rules is not None else all_rules())]

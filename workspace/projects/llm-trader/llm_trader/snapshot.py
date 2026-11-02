@@ -33,11 +33,21 @@ def build_snapshot(state: dict, ui_dir: Path = UI_DIR) -> str:
     return JS_TAG.sub(lambda _: scripts, html, count=1)
 
 
+LOCAL_BALANCE_WARNING = ("Note: this snapshot contains your balance from config/settings.local.json (the min-lot percentages "
+                         "reveal it too). Share it only with people you trust.")
+
+
+def saved_state(paths: Paths) -> dict:
+    if paths.state_file.exists():
+        return json.loads(paths.state_file.read_text(encoding="utf-8"))
+    return pipeline.run(paths=paths)
+
+
+def balance_warning(state: dict) -> str | None:
+    return LOCAL_BALANCE_WARNING if (state.get("risk") or {}).get("account", {}).get("source") == "local" else None
+
+
 def write_snapshot(paths: Paths | None = None, out=None, state: dict | None = None) -> Path:
     paths = paths or default_paths()
-    if state is None:
-        if paths.state_file.exists():
-            state = json.loads(paths.state_file.read_text(encoding="utf-8"))
-        else:
-            state = pipeline.run(paths=paths)
+    state = state if state is not None else saved_state(paths)
     return write_text(Path(out) if out else paths.dashboard_file, build_snapshot(state))

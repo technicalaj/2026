@@ -93,6 +93,9 @@ class SignalRule:
     description = ""
     demo_note = ""
     control = False
+    self_test = False
+    expected: str | None = None
+    origin = "human (demo)"
     default_symbols: tuple[str, ...] = ()
     default_params: dict = {}
 
@@ -103,6 +106,10 @@ class SignalRule:
     def __repr__(self) -> str:
         return f"{type(self).__name__}(rule_id={self.rule_id!r}, version={self.version!r})"
 
+    @property
+    def kind(self) -> str:
+        return "self_test" if self.self_test else "rule"
+
     def generate(self, df: pd.DataFrame, symbol: str) -> list[Signal]:
         raise NotImplementedError
 
@@ -111,19 +118,20 @@ class SignalRule:
         max_hold_bars: int, meta: dict | None = None,
     ) -> list[Signal]:
         side = np.asarray(side)
-        ok = (side != 0) & np.isfinite(stop)
-        rows = np.flatnonzero(ok)
+        # A signal whose stop could not be computed is kept with stop=None, so the backtest rejects it and the rule
+        # is blocked in plain sight instead of quietly losing that signal.
+        rows = np.flatnonzero(side != 0)
         close_times = df.index[rows] + timeframe_delta(self.timeframe)
         out = []
         for i, t in zip(rows, close_times):
-            tgt = float(target[i])
+            tgt, stp = float(target[i]), float(stop[i])
             out.append(
                 Signal(
                     rule_id=self.rule_id,
                     symbol=symbol,
                     time=t,
                     side=int(side[i]),
-                    stop=float(stop[i]),
+                    stop=stp if np.isfinite(stp) else None,
                     target=tgt if np.isfinite(tgt) else None,
                     max_hold_bars=int(max_hold_bars),
                     meta=dict(meta or {}),

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from llm_trader.signals.base import SignalRule
 from llm_trader.signals.control_planted import ControlPlanted
+from llm_trader.signals.demo_rule_a import DemoRuleA
+from llm_trader.signals.demo_rule_b import DemoRuleB
 from llm_trader.signals.leaky import Leaky
-from llm_trader.signals.range_breakout import RangeBreakout
-from llm_trader.signals.sweep_fade import SweepFade
 from llm_trader.signals.tight_target import TightTarget
 from llm_trader.signals.trend_pullback import TrendPullback
 
-RULE_CLASSES: tuple[type[SignalRule], ...] = (ControlPlanted, SweepFade, RangeBreakout, TrendPullback, TightTarget, Leaky)
+RULE_CLASSES: tuple[type[SignalRule], ...] = (ControlPlanted, DemoRuleA, DemoRuleB, TrendPullback, TightTarget, Leaky)
 
 
 def all_rules() -> list[SignalRule]:

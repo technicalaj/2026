@@ -7,16 +7,17 @@ from llm_trader.models import Signal
 from llm_trader.signals.base import SignalRule, atr, column, day_blocks, first_in_block
 
 
-class RangeBreakout(SignalRule):
-    rule_id = "range_breakout"
-    name = "Range Breakout (demo)"
+class DemoRuleB(SignalRule):
+    rule_id = "demo_rule_b"
+    name = "Demo Rule B (breakout)"
+    version = "2"
     default_symbols = ("XAUUSD", "GBPUSD", "US500")
     description = (
-        "Marks the Asian range (00:00-07:00 UTC). The first bar between 07:00 and 11:00 UTC that closes outside "
+        "Marks the overnight range (00:00-07:00 UTC). The first bar between 07:00 and 11:00 UTC that closes outside "
         "it triggers a trade in that direction at the next bar's open. Stop at the other side of the range "
-        "(never more than 1.5x ATR), target 1.5R, exit after 32 bars at most. One trade per day."
+        "(never more than 1.5× ATR), target 1.5R, exit after 32 bars at most. One trade per day."
     )
-    demo_note = "A popular textbook idea. On data without a real edge it should be no better than random entries."
+    demo_note = "A common textbook idea. On data without a real edge it should be no better than random entries."
     default_params = {
         "range_start_hour": 0,
         "range_end_hour": 7,

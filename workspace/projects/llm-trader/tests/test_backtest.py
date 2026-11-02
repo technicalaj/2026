@@ -6,7 +6,8 @@ from conftest import BAR, make_bars, make_spec, signal_after
 
 from llm_trader.costs import CostModel
 from llm_trader.eval.backtest import SignalRejected, simulate
-from llm_trader.models import Signal
+from llm_trader.models import Labels, Signal
+from llm_trader.signals.base import atr
 
 FREE = CostModel()
 
@@ -30,7 +31,7 @@ def test_entry_is_next_bar_open_and_target_exit():
     assert t.r == pytest.approx(1.0)
     assert t.hold_bars == 2
     assert t.exit_time == df.index[2] + BAR
-    assert t.win
+    assert t.win and t.label == "win" and not t.full_stop
 
 
 def test_stop_counts_first_when_stop_and_target_touch_same_bar():
@@ -38,7 +39,7 @@ def test_stop_counts_first_when_stop_and_target_touch_same_bar():
     t = one(df, signal_after(df, 0, 1, stop=99.0, target=101.0))
     assert t.outcome == "stop"
     assert t.r == pytest.approx(-1.0)
-    assert not t.win
+    assert not t.win and t.label == "loss" and t.full_stop
 
 
 def test_long_pays_spread_on_entry_and_exits_on_bid():
@@ -108,20 +109,23 @@ def test_gap_through_stop_fills_at_the_worse_open():
     assert t.r == pytest.approx(-1.5)
 
 
-def test_breakeven_exit_is_never_a_win():
+def test_breakeven_exit_is_labelled_by_its_r_not_its_exit_reason():
     rows = [[100, 100, 100, 100], [100.0, 100.6, 99.8, 100.4], [100.4, 100.45, 99.9, 100.0]]
     df = make_bars(rows)
     t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, breakeven_at_r=0.5))
     assert t.outcome == "breakeven"
     assert t.r == pytest.approx(0.0)
-    assert not t.win
+    assert (t.win, t.label, t.full_stop) == (False, "breakeven", False)
 
     rows[2] = [100.4, 100.45, 100.05, 100.2]
-    df = make_bars(rows)
-    t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, breakeven_at_r=0.5, breakeven_offset_r=0.1))
-    assert t.outcome == "breakeven"
-    assert t.r == pytest.approx(0.1)
-    assert not t.win
+    t = one(make_bars(rows), signal_after(df, 0, 1, stop=99.0, target=102.0, breakeven_at_r=0.5, breakeven_offset_r=0.05))
+    assert (t.outcome, t.label) == ("breakeven", "breakeven")
+    assert t.r == pytest.approx(0.05)
+
+    rows[2] = [100.4, 100.45, 100.25, 100.35]
+    t = one(make_bars(rows), signal_after(df, 0, 1, stop=99.0, target=102.0, breakeven_at_r=0.5, breakeven_offset_r=0.3))
+    assert t.outcome == "breakeven" and t.r == pytest.approx(0.3)
+    assert t.label == "win"
 
 
 def test_breakeven_stop_only_applies_after_the_trigger_bar():
@@ -130,13 +134,41 @@ def test_breakeven_stop_only_applies_after_the_trigger_bar():
     assert t.outcome == "time"
 
 
-def test_tiny_gains_are_not_wins():
+def test_tiny_gains_are_break_evens_not_wins():
     df = make_bars([[100, 100, 100, 100], [100.0, 100.2, 99.9, 100.03]])
     t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, max_hold=1))
     assert t.r == pytest.approx(0.03)
-    assert not t.win
-    t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, max_hold=1), win_epsilon_r=0.02)
+    assert (t.win, t.label) == (False, "breakeven")
+    t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, max_hold=1), labels=Labels(win_threshold_r=0.02))
     assert t.win
+
+
+def test_small_losses_are_losses_but_not_full_stops():
+    df = make_bars([[100, 100, 100, 100], [100.0, 100.2, 99.3, 99.5]])
+    t = one(df, signal_after(df, 0, 1, stop=99.0, target=102.0, max_hold=1))
+    assert t.r == pytest.approx(-0.5)
+    assert (t.label, t.full_stop) == ("loss", False)
+
+
+def test_costs_can_turn_a_target_hit_into_a_break_even():
+    df = make_bars([[100, 100, 100, 100], [100.0, 100.5, 99.9, 100.4]], spread=4)
+    t = one(df, signal_after(df, 0, 1, stop=99.6, target=100.15))
+    assert t.outcome == "target"
+    assert t.r == pytest.approx(0.11 / 0.44)
+    t = one(df, signal_after(df, 0, 1, stop=99.6, target=100.08))
+    assert t.outcome == "target" and t.r == pytest.approx(0.04 / 0.44)
+    assert t.label == "breakeven"
+
+
+def test_trades_record_the_atr_and_price_their_rule_saw():
+    rows = [[100 + i * 0.1, 100.3 + i * 0.1, 99.7 + i * 0.1, 100.05 + i * 0.1] for i in range(30)]
+    df = make_bars(rows)
+    t = one(df, signal_after(df, 20, 1, stop=99.0, target=104.0, max_hold=3))
+    assert t.signal_price == pytest.approx(df["close"].iloc[20])
+    assert t.entry_atr == pytest.approx(atr(df)[20])
+    early = one(df, signal_after(df, 2, 1, stop=99.0, target=104.0, max_hold=3))
+    assert math.isnan(early.entry_atr) and early.to_dict()["entry_atr"] is None
+    assert early.to_dict()["win"] is early.win
 
 
 @pytest.mark.parametrize("stop", [None, math.nan])

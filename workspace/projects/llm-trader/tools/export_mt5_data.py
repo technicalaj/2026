@@ -14,6 +14,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 EXPORTER_VERSION = "0.1.0"
+REPO = Path(__file__).resolve().parents[1]
+DEFAULT_OUT = REPO / "data" / "mt5"
+# Folders inside the repository that git ignores; meta.json (your broker's server name) may only go there.
+IGNORED_FOLDERS = ("data", "local")
 CSV_HEADER = ["time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume"]
 TIMEFRAMES = ("M1", "M5", "M15", "M30", "H1", "H4", "D1")
 
@@ -23,7 +27,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--symbols", required=True, help="comma-separated symbol names exactly as in Market Watch, e.g. XAUUSD,EURUSD")
     parser.add_argument("--timeframe", default="M15", choices=TIMEFRAMES)
     parser.add_argument("--months", type=int, default=24)
-    parser.add_argument("--out", default="data/mt5")
+    parser.add_argument("--out", default=str(DEFAULT_OUT), help="output folder (default: data/mt5 in the project, never committed)")
     parser.add_argument(
         "--server-tz", default="auto",
         help="broker clock: auto (detect from the live tick), nyclose (UTC+2 winter / UTC+3 US summer) or fixed hours like 2",
@@ -59,6 +63,17 @@ def rates_to_rows(rates, server_tz) -> list[list]:
         ]
         for bar in rates
     ]
+
+
+def unsafe_out(folder: Path) -> str | None:
+    try:
+        inside = Path(folder).resolve().relative_to(REPO)
+    except ValueError:
+        return None
+    if inside.parts and inside.parts[0] in IGNORED_FOLDERS:
+        return None
+    return (f"Refusing to write to {folder}: it is inside the project but not in a git-ignored folder, so your broker's "
+            f"data and server name could end up in the public repo. Use the default ({DEFAULT_OUT}) or a folder outside the project.")
 
 
 def write_csv(path: Path, rows: list[list]) -> None:
@@ -152,6 +167,10 @@ def export(mt5, args: argparse.Namespace) -> int:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    problem = unsafe_out(Path(args.out))
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
     try:
         import MetaTrader5 as mt5
     except ImportError:

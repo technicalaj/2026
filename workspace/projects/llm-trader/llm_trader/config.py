@@ -3,22 +3,26 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from llm_trader.eval.plans import canonical_json, plan_hash
 
 ROOT = Path(__file__).resolve().parents[1]
 # Facts about the account and plumbing, not trading rules: changing them needs no YES.
 UNTRACKED_SECTIONS = ("account", "llm", "server")
-# Every locked test plan embeds these sections, so changing them blocks every rule until it is re-locked.
-PLAN_SECTIONS = ("windows", "gate", "evaluation", "costs")
+# Every locked test plan embeds these sections (risk as a hash), so changing them blocks every rule until it is re-locked.
+PLAN_SECTIONS = ("windows", "gate", "evaluation", "costs", "risk")
 CONFIRM_WORD = "YES"
+HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+ROLLOVER = re.compile(r"^(\d{2}:\d{2})-(\d{2}:\d{2}) (\S+)$")
 
 
 class SettingsError(ValueError):
@@ -46,6 +50,10 @@ class Paths:
         return self.root / "config" / "approved.json"
 
     @property
+    def trials_file(self) -> Path:
+        return self.root / "config" / "trials.json"
+
+    @property
     def out_dir(self) -> Path:
         return self.root / "out"
 
@@ -58,8 +66,16 @@ class Paths:
         return self.out_dir / "report.md"
 
     @property
+    def bridge_dir(self) -> Path:
+        return self.out_dir / "bridge"
+
+    @property
     def bridge_file(self) -> Path:
-        return self.out_dir / "bridge" / "signals.json"
+        return self.bridge_dir / "advisories.json"
+
+    @property
+    def kill_flag(self) -> Path:
+        return self.bridge_dir / "kill.flag"
 
     @property
     def killswitch_file(self) -> Path:
@@ -72,6 +88,10 @@ class Paths:
     @property
     def last_run_file(self) -> Path:
         return self.out_dir / "last_run.json"
+
+    @property
+    def llm_spend_file(self) -> Path:
+        return self.out_dir / "llm_spend.json"
 
     @property
     def dashboard_file(self) -> Path:
@@ -123,16 +143,60 @@ class AccountSettings(_Open):
     leverage: float = Field(30, gt=0)
 
 
+class BlackoutSettings(_Open):
+    news_minutes: int = Field(15, ge=0)
+    major_news_minutes: int = Field(30, ge=0)
+    rollover: str = "16:45-17:15 America/New_York"
+    friday_cutoff_utc: str = "20:00"
+    calendar_max_age_hours: float = Field(24, gt=0)
+
+    @field_validator("rollover")
+    @classmethod
+    def _rollover(cls, value: str) -> str:
+        match = ROLLOVER.match(value)
+        if not match or not all(HHMM.match(t) for t in match.group(1, 2)):
+            raise ValueError("use the form 'HH:MM-HH:MM Area/City', for example '16:45-17:15 America/New_York'")
+        try:
+            ZoneInfo(match.group(3))
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown time zone {match.group(3)!r}") from None
+        return value
+
+    @field_validator("friday_cutoff_utc")
+    @classmethod
+    def _cutoff(cls, value: str) -> str:
+        if not HHMM.match(value):
+            raise ValueError("use the form 'HH:MM', for example '20:00'")
+        return value
+
+
 class RiskSettings(_Open):
-    risk_per_trade_pct: float = Field(1.0, gt=0, le=100)
-    max_open_risk_pct: float = Field(2.0, gt=0, le=100)
-    max_daily_loss_pct: float = Field(3.0, gt=0, le=100)
-    max_margin_use_pct: float = Field(50.0, gt=0, le=100)
-    max_positions_per_group: int = Field(1, ge=1)
+    risk_per_trade_pct: float = Field(0.5, gt=0, le=100)
+    risk_per_trade_cap_pct: float = Field(1.0, gt=0, le=100)
+    max_open_risk_pct: float = Field(1.5, gt=0, le=100)
+    max_cluster_risk_pct: float = Field(1.0, gt=0, le=100)
+    max_margin_use_pct: float = Field(30.0, gt=0, le=100)
+    daily_stop_pct: float = Field(2.0, gt=0, le=100)
+    weekly_stop_pct: float = Field(4.0, gt=0, le=100)
+    overall_kill_pct: float = Field(6.0, gt=0, le=100)
+    max_open_positions: int = Field(2, ge=1)
+    max_entries_per_day: int = Field(4, ge=1)
+    min_minutes_between_entries_per_symbol: int = Field(240, ge=0)
+    spread_skip_multiple: float = Field(2.0, gt=1)
+    pause_after_full_stops: int = Field(3, ge=1)
+    blackouts: BlackoutSettings = Field(default_factory=BlackoutSettings)
     high_correlation: float = Field(0.6, gt=0, le=1)
     correlation_days: int = Field(90, ge=7)
     forward_min_trades: int = Field(30, ge=1)
     forward_max_trades: int = Field(40, ge=1)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "RiskSettings":
+        if self.risk_per_trade_pct > self.risk_per_trade_cap_pct:
+            raise ValueError("risk_per_trade_pct must not be above risk_per_trade_cap_pct")
+        if self.forward_min_trades > self.forward_max_trades:
+            raise ValueError("forward_min_trades must not be above forward_max_trades")
+        return self
 
 
 class CorrelationGroup(BaseModel):
@@ -146,6 +210,36 @@ class LlmSettings(_Open):
     model: str = "claude-opus-5-5"
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     max_tokens: int = Field(16000, ge=1024, le=128000)
+    cost_cap_usd: float = Field(0.5, ge=0)
+    daily_cap_usd: float = Field(1.0, ge=0)
+
+
+class EventTaggerSettings(_Open):
+    model: str = "claude-haiku-5-5"
+    samples: int = Field(3, ge=1, le=9)
+    lookahead_hours: float = Field(2, gt=0)
+    min_scored_calls: int = Field(30, ge=1)
+    mock_flip_rate: float = Field(0.2, ge=0, le=0.5)
+    seed: int = 7
+
+
+class RegimeSettings(_Open):
+    atr_period: int = Field(14, ge=2)
+    ema_fast: int = Field(20, ge=2)
+    ema_slow: int = Field(50, ge=3)
+    lookback_days: int = Field(365, ge=30)
+    flat_band_atr: float = Field(0.25, ge=0)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> "RegimeSettings":
+        if self.ema_fast >= self.ema_slow:
+            raise ValueError("ema_fast must be shorter than ema_slow")
+        return self
+
+
+class ContextSettings(_Open):
+    event_tagger: EventTaggerSettings = Field(default_factory=EventTaggerSettings)
+    regime: RegimeSettings = Field(default_factory=RegimeSettings)
 
 
 class ServerSettings(_Open):
@@ -164,6 +258,7 @@ class SettingsFile(_Open):
     correlation_groups: list[CorrelationGroup] = Field(default_factory=list)
     llm: LlmSettings = Field(default_factory=LlmSettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
+    context: ContextSettings = Field(default_factory=ContextSettings)
 
 
 def _validation_message(source: str, exc: ValidationError) -> str:

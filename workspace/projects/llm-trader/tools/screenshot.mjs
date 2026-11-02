@@ -34,11 +34,13 @@ function loadPlaywright() {
   }
 }
 
+// The most instructive card: the self-test that must fail (a high win rate that still loses), else the failed rule that wins most.
 function pickAgent(state) {
   const research = Array.isArray(state.research) ? state.research : [];
-  const bar = state.meta?.accuracy_bar ?? 0.8;
-  const trap = research.find((r) => r.gate?.status === 'failed' && (r.windows?.holdout?.win_rate ?? 0) >= bar);
-  return (trap || research[0] || {}).rule_id || null;
+  const mustFail = research.find((r) => r.self_test && /fail/i.test(r.expected ?? ''));
+  const failed = research.filter((r) => r.gate?.status === 'failed')
+    .sort((a, b) => (b.windows?.holdout?.win_rate ?? 0) - (a.windows?.holdout?.win_rate ?? 0))[0];
+  return (mustFail || failed || research[0] || {}).rule_id || null;
 }
 
 const slug = (id) => String(id).replace(/[^a-zA-Z0-9_-]/g, '-');

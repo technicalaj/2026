@@ -7,11 +7,11 @@ from llm_trader.costs import CostModel
 from llm_trader.data.symbols import SymbolSpec
 from llm_trader.eval.backtest import Market, market_arrays, simulate_arrays
 from llm_trader.eval.windows import contains, in_window
-from llm_trader.models import RandomBaseline, Trade, utc
+from llm_trader.models import DEFAULT_LABELS, Labels, RandomBaseline, Trade, utc
 from llm_trader.signals.base import atr
 
 HIST_BINS = 25
-MATCH_MINUTES = 60
+NS_PER_DAY = 86_400 * 10**9
 
 
 def empirical_p_value(replicas, observed: float) -> float:
@@ -29,67 +29,68 @@ def atr_at_open(df: pd.DataFrame, period: int = 14) -> np.ndarray:
     return np.r_[np.nan, atr(df, period)[:-1]]
 
 
-def _minutes_apart(minute_of_day: np.ndarray, minute: int) -> np.ndarray:
-    return np.abs((minute_of_day - minute + 720) % 1440 - 720)
+def entry_day(trade: Trade) -> int:
+    return utc(trade.entry_time).as_unit("ns").value // NS_PER_DAY
+
+
+def window_days(df: pd.DataFrame, window) -> np.ndarray:
+    times = df.index.as_unit("ns").asi8
+    return np.unique(times[in_window(times, *window)] // NS_PER_DAY)
 
 
 def _replicas_for_symbol(
-    rng: np.random.Generator, df: pd.DataFrame, spec: SymbolSpec, cost_model: CostModel, trades: list[Trade],
-    window, runs: int, win_epsilon_r: float, atr_period: int,
+    df: pd.DataFrame, spec: SymbolSpec, cost_model: CostModel, trades: list[Trade], window, real_days: np.ndarray,
+    drawn_days: np.ndarray, labels: Labels, atr_period: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    runs = len(drawn_days)
+    zeros = np.zeros(runs)
     m: Market = market_arrays(df, spec, cost_model)
     scale = atr_at_open(df, atr_period)
-    minute_of_day = (df.index.hour * 60 + df.index.minute).to_numpy()
-    real = np.searchsorted(m.times_ns, [utc(t.entry_time).as_unit("ns").value for t in trades])
+    entry_ns = np.array([utc(t.entry_time).as_unit("ns").value for t in trades], dtype=np.int64)
+    real = np.searchsorted(m.times_ns, entry_ns)
     ref = m.open[real]
     with np.errstate(divide="ignore", invalid="ignore"):
         stop_mult = np.abs(ref - np.array([t.stop for t in trades])) / scale[real]
         target_mult = np.abs(np.array([np.nan if t.target is None else t.target for t in trades]) - ref) / scale[real]
-    hold = np.array([t.max_hold_bars for t in trades])
-    be_r = np.array([t.meta.get("breakeven_at_r", np.nan) for t in trades], dtype=float)
-    be_off = np.array([t.meta.get("breakeven_offset_r", 0.0) for t in trades], dtype=float)
     usable = np.isfinite(stop_mult) & (stop_mult > 0)
-
-    eligible = in_window(m.times_ns, *window) & np.isfinite(scale) & (scale > 0) & (np.arange(m.bars) + hold.max() <= m.bars)
-    candidates = np.flatnonzero(eligible)
-    zeros = np.zeros(runs)
-    if len(candidates) == 0 or not usable.any():
+    if not usable.any():
         return zeros, zeros.copy(), zeros.copy()
-    candidate_minutes = minute_of_day[candidates]
-    trade_minutes = minute_of_day[real]
-    parts = {k: [] for k in ("entry", "side", "stop", "target", "hold", "be_r", "be_off", "replica")}
-    for minute in np.unique(trade_minutes[usable]):
-        members = np.flatnonzero(usable & (trade_minutes == minute))
-        # Centred on the trade's own time of day, so intraday volatility and spread patterns cancel out.
-        near = _minutes_apart(candidate_minutes, minute) <= MATCH_MINUTES
-        pool = candidates[near] if near.any() else candidates
-        k = len(members)
-        entry = pool[rng.integers(0, len(pool), size=(runs, k))]
-        side = rng.integers(0, 2, size=(runs, k)) * 2 - 1
-        open_px, atr_px = m.open[entry], scale[entry]
-        parts["entry"].append(entry.ravel())
-        parts["side"].append(side.ravel())
-        parts["stop"].append((open_px - side * stop_mult[members] * atr_px).ravel())
-        parts["target"].append((open_px + side * target_mult[members] * atr_px).ravel())
-        parts["hold"].append(np.broadcast_to(hold[members], (runs, k)).ravel())
-        parts["be_r"].append(np.broadcast_to(be_r[members], (runs, k)).ravel())
-        parts["be_off"].append(np.broadcast_to(be_off[members], (runs, k)).ravel())
-        parts["replica"].append(np.repeat(np.arange(runs), k))
-    flat = {k: np.concatenate(v) for k, v in parts.items()}
-    res = simulate_arrays(
-        m, flat["entry"], flat["side"], flat["stop"], flat["target"], flat["hold"],
-        cost_model.slippage_price(spec), cost_model.commission_price(spec), flat["be_r"], flat["be_off"],
+    keep = np.flatnonzero(usable)
+    entry_ns, stop_mult, target_mult = entry_ns[keep], stop_mult[keep], target_mult[keep]
+    hold = np.array([trades[i].max_hold_bars for i in keep], dtype=np.int64)
+    # Same direction as the real trade: only the timing is random, so trend alone cannot look like skill.
+    sides = np.array([trades[i].side for i in keep], dtype=np.int64)
+    be_r = np.array([trades[i].meta.get("breakeven_at_r", np.nan) for i in keep], dtype=float)
+    be_off = np.array([trades[i].meta.get("breakeven_offset_r", 0.0) for i in keep], dtype=float)
+
+    day = entry_ns // NS_PER_DAY
+    shift = drawn_days[:, np.searchsorted(real_days, day)] - day[None, :]
+    target_ns = entry_ns[None, :] + shift * NS_PER_DAY
+    idx = np.minimum(np.searchsorted(m.times_ns, target_ns), m.bars - 1)
+    # Same time of day on the drawn day; a time with no bar there (market closed) is left out of that replica.
+    ok = (
+        (m.times_ns[idx] == target_ns) & in_window(target_ns, *window) & np.isfinite(scale[idx]) & (scale[idx] > 0)
+        & (idx + hold[None, :] <= m.bars)
     )
-    ids = flat["replica"]
-    total_r = np.bincount(ids, weights=np.where(res.valid, res.r, 0.0), minlength=runs)
-    total_wins = np.bincount(ids, weights=res.wins(win_epsilon_r).astype(float), minlength=runs)
-    total_n = np.bincount(ids, weights=res.valid.astype(float), minlength=runs)
+    replica, member = np.nonzero(ok)
+    if len(replica) == 0:
+        return zeros, zeros.copy(), zeros.copy()
+    entry = idx[replica, member]
+    side = sides[member]
+    open_px, atr_px = m.open[entry], scale[entry]
+    res = simulate_arrays(
+        m, entry, side, open_px - side * stop_mult[member] * atr_px, open_px + side * target_mult[member] * atr_px,
+        hold[member], cost_model.slippage_price(spec), cost_model.commission_price(spec), be_r[member], be_off[member],
+    )
+    total_r = np.bincount(replica, weights=np.where(res.valid, res.r, 0.0), minlength=runs)
+    total_wins = np.bincount(replica, weights=res.wins(labels).astype(float), minlength=runs)
+    total_n = np.bincount(replica, weights=res.valid.astype(float), minlength=runs)
     return total_r, total_wins, total_n
 
 
 def random_baseline(
     df_by_symbol: dict[str, pd.DataFrame], trades: list[Trade], window, spec_by_symbol: dict[str, SymbolSpec],
-    cost_model: CostModel, runs: int = 1000, seed: int = 0, win_epsilon_r: float = 0.05, atr_period: int = 14,
+    cost_model: CostModel, runs: int = 1000, seed: int = 0, labels: Labels | None = None, atr_period: int = 14,
 ) -> RandomBaseline:
     start, end = window
     picked = [t for t in trades if contains(start, end, t.entry_time)]
@@ -97,11 +98,22 @@ def random_baseline(
         return empty_baseline()
     observed_expectancy = float(np.mean([t.r for t in picked]))
     observed_win_rate = float(np.mean([t.win for t in picked]))
+    labels = labels or DEFAULT_LABELS
     rng = np.random.default_rng(seed)
+    symbols = sorted({t.symbol for t in picked})
+    # Each replica maps every real trading day to one random day of the window, shared by all symbols, so trades that
+    # bunch up on one day (re-entries, several symbols at once) stay bunched and the replicas are as noisy as the rule.
+    real_days = np.unique([entry_day(t) for t in picked])
+    pool = np.unique(np.concatenate([window_days(df_by_symbol[s], window) for s in symbols]))
+    if len(pool) == 0:
+        return empty_baseline()
+    drawn_days = pool[rng.integers(0, len(pool), size=(runs, len(real_days)))]
     total_r, total_wins, total_n = np.zeros(runs), np.zeros(runs), np.zeros(runs)
-    for symbol in sorted({t.symbol for t in picked}):
+    for symbol in symbols:
         group = [t for t in picked if t.symbol == symbol]
-        r, wins, n = _replicas_for_symbol(rng, df_by_symbol[symbol], spec_by_symbol[symbol], cost_model, group, window, runs, win_epsilon_r, atr_period)
+        r, wins, n = _replicas_for_symbol(
+            df_by_symbol[symbol], spec_by_symbol[symbol], cost_model, group, window, real_days, drawn_days, labels, atr_period,
+        )
         total_r += r
         total_wins += wins
         total_n += n

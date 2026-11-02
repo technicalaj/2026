@@ -18,6 +18,8 @@ BASELINE = "baseline"
 PLAN_PREFIX = "plan:"
 RELOCK_HINT = "python -m llm_trader lock --all --yes"
 BASELINE_NOTE = "Approved starting point. Any later change to settings or test plans waits for your YES."
+BASELINE_SUMMARY = "Adopt the starting settings and locked plans"
+BASELINE_KEPT = "nothing earlier to go back to, so it still waits for your YES and safe mode stays on"
 
 
 class ApprovalError(ValueError):
@@ -93,6 +95,11 @@ def _settings_summary(diff: list[str]) -> str:
     if any(p.split(".", 1)[0] in PLAN_SECTIONS for p in paths):
         summary += f". Every test plan includes this, so re-lock them after approving: {RELOCK_HINT}"
     return summary
+
+
+def _was_rejected(log: dict, subject: str, sha: str | None) -> bool:
+    # A removed plan has no hash, so a plain .get() would match "never rejected" against None.
+    return subject in log["rejected"] and log["rejected"][subject] == sha
 
 
 def _order(subject: str) -> tuple:
@@ -172,7 +179,7 @@ class Approvals:
         if record is None:
             diff = [f"settings: (none) → {_short(current[SETTINGS])}"]
             diff += [f"plan {s.removeprefix(PLAN_PREFIX)}: (none) → {_short(h)}" for s, h in current.items() if s != SETTINGS]
-            return {BASELINE: ("baseline", self._combined(current), "Approve the current settings and test plans as your starting point", diff)}
+            return {BASELINE: ("baseline", self._combined(current), BASELINE_SUMMARY, diff)}
         approved = self._approved_hashes(record)
         wanted = {}
         for subject in sorted(set(current) | set(approved), key=_order):
@@ -213,7 +220,7 @@ class Approvals:
         old_pending = {p["subject"]: p for p in log["pending"]}
         pending = []
         for subject, (kind, sha, summary, diff) in wanted.items():
-            if log["rejected"].get(subject) == sha:
+            if _was_rejected(log, subject, sha):
                 continue
             existing = old_pending.pop(subject, None)
             if existing and existing["sha256"] == sha:
@@ -234,12 +241,14 @@ class Approvals:
             return ApprovalStatus(log["pending"], log["history"], False, None)
         ids = [p["id"] for p in log["pending"]]
         parts = []
-        if len(ids) == 1:
+        if [p["subject"] for p in log["pending"]] == [BASELINE]:
+            parts.append(f"The starting settings and locked test plans wait for your YES ({ids[0]}).")
+        elif len(ids) == 1:
             parts.append(f"A change waits for your YES ({ids[0]}).")
         elif ids:
             parts.append(f"{len(ids)} changes wait for your YES ({', '.join(ids)}).")
-        if any(log["rejected"].get(s) == w[1] for s, w in wanted.items()):
-            parts.append("A change you rejected is still in the files: put it back (or approve it) to leave safe mode.")
+        if any(_was_rejected(log, s, w[1]) for s, w in wanted.items()):
+            parts.append("A change you rejected is still in the files: put the approved version back by hand to leave safe mode.")
         parts.append("Nothing is sent to the bridge until then.")
         return ApprovalStatus(log["pending"], log["history"], True, " ".join(parts))
 
@@ -287,11 +296,17 @@ class Approvals:
         log = self._log()
         item = self._find(log, change_id)
         subject = item["subject"]
+        if subject == BASELINE:
+            # Rejecting the starting point must not hide it: there is nothing to restore, and it must stay approvable.
+            entry = {"id": item["id"], "decided_at": when, "decision": "rejected", "summary": f"{item['summary']} ({BASELINE_KEPT})"}
+            log["history"].append(entry)
+            self._save_log(log)
+            return entry
         restored = self._restore(subject, log)
         if not restored:
             log["rejected"][subject] = item["sha256"]
         log["pending"].remove(item)
-        outcome = "put back to the approved version" if restored else "still in the files: put it back by hand or approve it; safe mode stays on"
+        outcome = "put back to the approved version" if restored else "still in the files: put it back by hand; safe mode stays on"
         entry = {"id": item["id"], "decided_at": when, "decision": "rejected", "summary": f"{item['summary']} ({outcome})"}
         log["history"].append(entry)
         self._save_log(log)

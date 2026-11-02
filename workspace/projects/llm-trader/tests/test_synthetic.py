@@ -84,7 +84,7 @@ def test_pattern_exists_only_on_the_control_symbol(demo):
     def fade_move(symbol):
         df = demo[symbol][0]
         close = df["close"].to_numpy()
-        signals = get_rule("sweep_fade").generate(df, symbol)
+        signals = get_rule("demo_rule_a").generate(df, symbol)
         pos = np.searchsorted(df.index, [s.time for s in signals])
         pos = pos[pos + 8 < len(df)]
         sides = np.array([s.side for s in signals])[: len(pos)]

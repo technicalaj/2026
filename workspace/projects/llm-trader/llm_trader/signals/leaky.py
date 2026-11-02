@@ -10,9 +10,12 @@ from llm_trader.signals.base import SignalRule, atr, column
 class Leaky(SignalRule):
     rule_id = "leaky"
     name = "Leaky Rule (demo)"
+    version = "2"
+    self_test = True
+    expected = "must be blocked"
     default_symbols = ("EURUSD",)
     description = (
-        "At 08:00, 12:00 and 16:00 UTC, trades in the direction the market is 'about to' move. Stop 1x ATR, "
+        "At 08:00, 12:00 and 16:00 UTC, trades in the direction the market is 'about to' move. Stop 1× ATR, "
         "target 0.5R, exit after 16 bars at most."
     )
     demo_note = (

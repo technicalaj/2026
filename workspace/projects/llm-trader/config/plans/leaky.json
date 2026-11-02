@@ -1,4 +1,5 @@
 {
+  "code_sha256": "97e76b10d709a3b532e292682fa9a400bafbe4cb9e000014fa871972900b2bbc",
   "costs": {
     "model": {
       "commission_multiplier": 1.0,
@@ -16,20 +17,29 @@
   },
   "data_requirement": "mt5_export",
   "evaluation": {
-    "leak_cuts": 12,
+    "leak_cuts": 100,
     "random_runs": 1000,
-    "seed": 7,
-    "win_epsilon_r": 0.05
+    "seed": 7
   },
   "gate": {
     "accuracy_bar": 0.8,
+    "breakeven_band_r": 0.1,
+    "full_stop_r": -0.9,
     "max_p_value": 0.05,
     "max_p_value_recent": 0.1,
+    "max_profit_factor": 4.0,
+    "max_stop_target_ratio": 2.0,
+    "max_win_rate": 0.9,
+    "min_positive_terciles": 2,
+    "min_tercile_trades": 5,
     "min_trades_holdout": 30,
     "min_trades_recent": 10,
-    "require_positive_expectancy": true
+    "prior_trials": 0,
+    "require_positive_expectancy": true,
+    "win_threshold_r": 0.1
   },
-  "locked_at": "2026-11-01T21:19:08Z",
+  "locked_at": "2026-11-02T02:09:51Z",
+  "origin": "human (demo)",
   "params": {
     "atr_period": 14,
     "entry_hours": [
@@ -41,13 +51,14 @@
     "stop_atr": 1.0,
     "target_r": 0.5
   },
+  "risk_config_sha256": "37ae82e1d67f44e0ec15823cb9ffd1effaee814ef5309cfc9a35777c72457978",
   "rule_id": "leaky",
-  "sha256": "24becff357fffaad1b49231ef1f571452141f5838348a592a5fc68d561dc9ada",
+  "sha256": "569d77d99e66cba968c3fa7e24b86c09445b5a05f4f8c2d1b46792a0077bf45f",
   "symbols": [
     "EURUSD"
   ],
   "timeframe": "M15",
-  "version": "1",
+  "version": "2",
   "windows": {
     "holdout_months": 6,
     "recent_months": 3

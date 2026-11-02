@@ -13,10 +13,14 @@ if str(ROOT) not in sys.path:
 
 from llm_trader.data.loader import load_dataset  # noqa: E402
 from llm_trader.data.symbols import SymbolSpec  # noqa: E402
+from llm_trader.eval.plans import lock_all_plans  # noqa: E402
 from llm_trader.models import Signal  # noqa: E402
 
 SETTINGS_PATH = ROOT / "config" / "settings.json"
 PLANS_DIR = ROOT / "config" / "plans"
+TRIALS_PATH = ROOT / "config" / "trials.json"
+TRIALS_AT_START = TRIALS_PATH.read_bytes() if TRIALS_PATH.exists() else None
+LOCKED_AT = "2026-11-01T22:00:00Z"
 BAR = pd.Timedelta(minutes=15)
 
 
@@ -26,8 +30,17 @@ def settings() -> dict:
 
 
 @pytest.fixture(scope="session")
-def plans_dir() -> Path:
+def committed_plans_dir() -> Path:
     return PLANS_DIR
+
+
+@pytest.fixture(scope="session")
+def plans_dir(tmp_path_factory, settings) -> Path:
+    # Locked from the settings as they are now, so engine tests do not depend on when config/plans was last re-locked;
+    # test_plans checks the committed plans separately.
+    folder = tmp_path_factory.mktemp("plans")
+    lock_all_plans(settings, folder, locked_at=LOCKED_AT)
+    return folder
 
 
 @pytest.fixture(scope="session")
@@ -36,11 +49,16 @@ def demo():
 
 
 @pytest.fixture(scope="session")
-def timed_evaluations(demo, settings, plans_dir):
+def trials_path(tmp_path_factory) -> Path:
+    return tmp_path_factory.mktemp("trials") / "trials.json"
+
+
+@pytest.fixture(scope="session")
+def timed_evaluations(demo, settings, plans_dir, trials_path):
     from llm_trader.eval.run import evaluate_all
 
     started = time.perf_counter()
-    evaluations = evaluate_all(demo, settings, plans_dir)
+    evaluations = evaluate_all(demo, settings, plans_dir, trials_path=trials_path)
     return {e.rule_id: e for e in evaluations}, time.perf_counter() - started
 
 

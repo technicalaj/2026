@@ -188,6 +188,16 @@ def test_exporter_detects_the_broker_clock():
     assert not tool.us_summer_time(datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc))
 
 
+def test_exporter_writes_only_where_git_ignores_it(tmp_path, monkeypatch):
+    tool = load_exporter_tool()
+    monkeypatch.chdir(ROOT / "tools")
+    assert tool.parse_args(["--symbols", "XAUUSD"]).out == str(ROOT / "data" / "mt5")
+    assert tool.unsafe_out(ROOT / "data" / "mt5") is None and tool.unsafe_out(ROOT / "local" / "x") is None
+    assert tool.unsafe_out(tmp_path) is None
+    assert "not in a git-ignored folder" in tool.unsafe_out(ROOT / "tools" / "data" / "mt5")
+    assert tool.main(["--symbols", "XAUUSD", "--out", str(ROOT / "llm_trader" / "data" / "mt5")]) == 2
+
+
 def test_exporter_is_strictly_read_only():
     source = (ROOT / "tools" / "export_mt5_data.py").read_text()
     for forbidden in ("order_send", "order_check", "positions_", "symbol_select", "Close("):

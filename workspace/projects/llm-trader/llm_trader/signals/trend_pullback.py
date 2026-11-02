@@ -10,10 +10,11 @@ from llm_trader.signals.base import SignalRule, apply_cooldown, atr, column, ema
 class TrendPullback(SignalRule):
     rule_id = "trend_pullback"
     name = "Trend Pullback (demo)"
+    version = "2"
     default_symbols = ("EURUSD", "USDJPY")
     description = (
         "Buys a deep pullback in an uptrend: EMA50 above EMA200, price still above EMA200, the bar dips to EMA20 "
-        "and RSI(14) is below 25 (mirror for downtrends). Stop 1.5x ATR, target 2R, exit after 48 bars at most."
+        "and RSI(14) is below 25 (mirror for downtrends). Stop 1.5× ATR, target 2R, exit after 48 bars at most."
     )
     demo_note = (
         "Deliberately strict. It fires so rarely that there are too few trades to judge, so the gate answers "

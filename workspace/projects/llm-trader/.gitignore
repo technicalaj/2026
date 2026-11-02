@@ -1,9 +1,17 @@
-# Your MT5 exports (meta.json holds your broker's server name) and everything the app generates.
-# Leading slashes keep these to the project root, so the llm_trader/data package stays tracked.
-/data/
-/out/
-/.venv/
-/.env
-/config/settings.local.json
-__pycache__/
+# Your MT5 exports (meta.json holds your broker's server name), private notes and everything the app generates.
+# "data/*" has a slash in the middle, so it only matches the top-level folder: the llm_trader/data package stays tracked.
+data/*
+out/
+local/
+logs/
+*.db
+*.parquet
 .pytest_cache/
+.venv/
+.env
+__pycache__/
+config/settings.local.json
+# Your typed YES and your trial log live only on the computer where they were made, so pulled changes always show
+# up as pending and a pull can never lower the number of tries.
+config/approved.json
+config/trials.json

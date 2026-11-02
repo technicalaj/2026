@@ -7,12 +7,14 @@ import pandas as pd
 
 from llm_trader.costs import CostModel
 from llm_trader.data.symbols import SymbolSpec
-from llm_trader.models import Signal, Trade, iso, utc
+from llm_trader.models import DEFAULT_LABELS, Labels, Signal, Trade, iso, utc
+from llm_trader.signals.base import atr
 
 TARGET, STOP, BREAKEVEN, TIME = 0, 1, 2, 3
 OUTCOME_NAMES = ("target", "stop", "breakeven", "time")
 CHUNK_CELLS = 1_000_000
 DEFAULT_BAR_NS = 15 * 60 * 10**9
+ATR_PERIOD = 14
 
 
 class SignalRejected(ValueError):
@@ -50,8 +52,8 @@ class SimResult:
         nan = np.full(k, np.nan)
         return cls(np.zeros(k, bool), np.zeros(k, np.int64), nan.copy(), nan.copy(), np.full(k, TIME, np.int8), nan.copy(), nan.copy(), nan.copy())
 
-    def wins(self, win_epsilon_r: float) -> np.ndarray:
-        return self.valid & (self.r > win_epsilon_r) & (self.outcome != BREAKEVEN)
+    def wins(self, labels: Labels = DEFAULT_LABELS) -> np.ndarray:
+        return self.valid & labels.wins(self.r)
 
 
 def infer_bar_ns(times_ns: np.ndarray) -> int:
@@ -178,12 +180,15 @@ def check_signal(signal: Signal) -> None:
         raise SignalRejected(f"{where}: target must be on the profit side of the stop")
 
 
-def simulate(df: pd.DataFrame, signals: list[Signal], spec: SymbolSpec, cost_model: CostModel, win_epsilon_r: float = 0.05) -> list[Trade]:
+def simulate(df: pd.DataFrame, signals: list[Signal], spec: SymbolSpec, cost_model: CostModel, labels: Labels | None = None) -> list[Trade]:
     if not signals:
         return []
     for signal in signals:
         check_signal(signal)
+    labels = labels or DEFAULT_LABELS
     m = market_arrays(df, spec, cost_model)
+    # ATR(14) as known when the signal bar closed, the last moment before entry.
+    entry_atr = np.r_[np.nan, atr(df, ATR_PERIOD)[:-1]]
     signal_ns = np.array([utc(s.time).as_unit("ns").value for s in signals], dtype=np.int64)
     entry_index = np.searchsorted(m.times_ns, signal_ns, side="left")
     res = simulate_arrays(
@@ -198,12 +203,12 @@ def simulate(df: pd.DataFrame, signals: list[Signal], spec: SymbolSpec, cost_mod
         breakeven_r=[s.meta.get("breakeven_at_r", np.nan) for s in signals],
         breakeven_offset_r=[s.meta.get("breakeven_offset_r", 0.0) for s in signals],
     )
-    wins = res.wins(win_epsilon_r)
     trades = []
     for i in np.flatnonzero(res.valid):
         s = signals[i]
         e = int(entry_index[i])
         x = e + int(res.exit_offset[i])
+        r = float(res.r[i])
         trades.append(
             Trade(
                 rule_id=s.rule_id,
@@ -217,12 +222,15 @@ def simulate(df: pd.DataFrame, signals: list[Signal], spec: SymbolSpec, cost_mod
                 exit_time=pd.Timestamp(int(m.times_ns[x]) + m.bar_ns, tz="UTC"),
                 exit=float(res.exit[i]),
                 outcome=OUTCOME_NAMES[int(res.outcome[i])],
-                r=float(res.r[i]),
+                r=r,
                 risk_price=float(res.risk[i]),
                 costs_r=float(res.costs_r[i]),
                 hold_bars=int(res.exit_offset[i]) + 1,
                 max_hold_bars=int(s.max_hold_bars),
-                win=bool(wins[i]),
+                label=labels.label(r),
+                full_stop=labels.is_full_stop(r),
+                entry_atr=float(entry_atr[e]) if e > 0 else None,
+                signal_price=float(m.close[e - 1]) if e > 0 else None,
                 meta=dict(s.meta),
             )
         )

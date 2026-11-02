@@ -39,7 +39,8 @@ PROFILES = {
     "USDJPY": MarketProfile(152.50, 0.0060, usd_beta=0.50, risk_beta=0.30, volume=650),
     "US500": MarketProfile(5800.0, 0.0095, risk_beta=0.70, volume=800),
     "BTCUSD": MarketProfile(72000.0, 0.028, risk_beta=0.45, volume=400),
-    "CTRL-SYN": MarketProfile(100.0, 0.012, volume=300),
+    # Priced high enough that its 2-point spread is small next to each move, so a planted win is never eaten by costs.
+    "CTRL-SYN": MarketProfile(1000.0, 0.012, volume=300),
 }
 
 
@@ -47,11 +48,16 @@ PROFILES = {
 class PlantedPattern:
     # CTRL-SYN positive control. After the first bar of a UTC day that trades above the previous full day's
     # high and closes back below it (mirror for the low), the next `drift_bars` bars drift `drift_sigmas`
-    # bar-sigmas per bar in the fade direction. A "full day" has at least `min_day_bars` bars, so the 2-hour
-    # Sunday stub is skipped. Tuned so control_planted wins roughly 83-90% of never-seen-month trades.
+    # bar-sigmas per bar in the fade direction, except every `adverse_every`-th such event, which drifts the
+    # same distance the other way. A "full day" has at least `min_day_bars` bars, so the 2-hour Sunday stub is
+    # skipped. The fixed rhythm (not a coin flip per event) keeps the true win rate near 6 in 7 in every window
+    # and on every seed, and makes the losers full stops, so control_planted's 0.5R target wins about 85% with
+    # a profit factor near 2.7: clearly real, never "too good to be true" (win rate <= 90%, PF <= 4). Checked on
+    # seeds 1-100: all qualify, never-seen win rate 82-86%.
     min_day_bars: int = 16
-    drift_sigmas: float = 0.85
-    drift_bars: int = 8
+    drift_sigmas: float = 3.0
+    drift_bars: int = 4
+    adverse_every: int = 7
 
 
 PLANTED = PlantedPattern()
@@ -174,13 +180,19 @@ def _planted_path(
         if up and not swept_hi:
             swept_hi = True
             if not down:
-                bear_until = t + 1 + pattern.drift_bars
                 events += 1
+                if events % pattern.adverse_every:
+                    bear_until = t + 1 + pattern.drift_bars
+                else:
+                    bull_until = t + 1 + pattern.drift_bars
         if down and not swept_lo:
             swept_lo = True
             if not up:
-                bull_until = t + 1 + pattern.drift_bars
                 events += 1
+                if events % pattern.adverse_every:
+                    bull_until = t + 1 + pattern.drift_bars
+                else:
+                    bear_until = t + 1 + pattern.drift_bars
     return np.array(out_o), np.array(out_h), np.array(out_l), np.array(out_c), events
 
 

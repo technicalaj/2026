@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 AgentStatus = Literal["ok", "warn", "fail", "idle", "planned"]
 GateStatus = Literal["qualified", "failed", "insufficient", "blocked"]
+Lane = Literal["supervisor", "data", "research", "context", "validation", "risk", "monitor", "report", "planned"]
 
 
 class Strict(BaseModel):
@@ -34,8 +35,18 @@ class Meta(Strict):
     accuracy_bar: float = Field(gt=0, le=1)
     kill_switch: KillSwitchState
     safe_mode: SafeMode
-    eligible_for_money: bool
+    eligible_for_money: Literal[False]
     eligible_note: str
+    banners: list[str]
+    trial_count: int = Field(ge=0)
+    prior_trials: int = Field(ge=0)
+    account_feed: bool
+    guardian_connected: bool
+
+
+class PicksToday(Strict):
+    picks: list[dict[str, Any]]
+    reason: str
 
 
 class Stage(Strict):
@@ -48,7 +59,7 @@ class Stage(Strict):
 class Agent(Strict):
     id: str
     name: str
-    lane: Literal["supervisor", "data", "research", "validation", "risk", "monitor", "report", "planned"]
+    lane: Lane
     kind: Literal["code", "llm", "code+llm"]
     role: str
     status: AgentStatus
@@ -80,6 +91,7 @@ class WindowMetrics(Strict):
     end: str | None
     trades: int
     wins: int
+    losses: int
     win_rate: float | None
     win_rate_ci: list[float] = Field(min_length=2, max_length=2)
     full_stop_rate: float | None
@@ -91,8 +103,33 @@ class WindowMetrics(Strict):
     equity_r: list[float]
 
 
+class Split(Strict):
+    trades: int
+    win_rate: float | None
+    expectancy_r: float | None
+
+
+class Tercile(Strict):
+    name: Literal["low", "mid", "high"]
+    trades: int
+    expectancy_r: float | None
+
+
+class Extra(Strict):
+    expectancy_ci: list[float | None] = Field(min_length=2, max_length=2)
+    expectancy_1_5x_costs: float | None
+    expectancy_2x_costs: float | None
+    long: Split
+    short: Split
+    terciles: list[Tercile]
+    stop_target_ratio: float | None
+    holm_threshold: float | None
+    trial_count: int = Field(ge=0)
+
+
 class ScoredWindow(WindowMetrics):
     random: RandomBaseline
+    extra: Extra
 
 
 class Windows(Strict):
@@ -144,7 +181,12 @@ class Research(Strict):
     description: str
     demo_note: str
     control: bool
+    kind: Literal["rule", "self_test"]
+    self_test: bool
+    expected: str | None
+    self_test_ok: bool | None
     plan: Plan
+    results_hidden: bool
     signals: int
     windows: Windows
     gate: Gate
@@ -152,6 +194,44 @@ class Research(Strict):
     stage_note: str
     forward: Forward
     risk_at_min_lot: RiskAtMinLot
+
+
+class SelfTest(Strict):
+    id: str
+    name: str
+    expected: str
+    actual: str
+    ok: bool | None
+    detail: str
+
+
+class TaggerAnswer(Strict):
+    symbol: str
+    event: str
+    time: str
+    verdicts: list[Literal["pause", "no pause"]]
+    agreement: str
+    pause: bool
+
+
+class EventTagger(Strict):
+    stage: Literal["research", "shadow", "qualified", "retired", "blocked"]
+    measured: str
+    samples: int = Field(ge=1)
+    model: str
+    note: str
+    last: list[TaggerAnswer]
+
+
+class RegimeRow(Strict):
+    symbol: str
+    vol_tercile: Literal[1, 2, 3]
+    trend: Literal["up", "down", "flat"]
+
+
+class Context(Strict):
+    event_tagger: EventTagger
+    regime: list[RegimeRow]
 
 
 class Check(Strict):
@@ -167,14 +247,32 @@ class Account(Strict):
     balance: float
     currency: str
     leverage: float
+    source: Literal["placeholder", "local"]
+
+
+class Blackouts(Strict):
+    news_minutes: int
+    major_news_minutes: int
+    rollover: str
+    friday_cutoff_utc: str
+    calendar_max_age_hours: float
 
 
 class Limits(Strict):
     risk_per_trade_pct: float
+    risk_per_trade_cap_pct: float
     max_open_risk_pct: float
-    max_daily_loss_pct: float
+    max_cluster_risk_pct: float
     max_margin_use_pct: float
-    max_positions_per_group: int
+    daily_stop_pct: float
+    weekly_stop_pct: float
+    overall_kill_pct: float
+    max_open_positions: int
+    max_entries_per_day: int
+    min_minutes_between_entries_per_symbol: int
+    spread_skip_multiple: float
+    pause_after_full_stops: int
+    blackouts: Blackouts
 
 
 class Usage(Strict):
@@ -204,6 +302,19 @@ class MinLotRow(Strict):
     note: str | None
 
 
+class BalanceRow(Strict):
+    symbol: str
+    risk_at_min_lot: float | None
+    risk_pct: float | None
+    ok: bool | None
+    note: str | None
+
+
+class MinLotAtBalance(Strict):
+    balance: float
+    rows: list[BalanceRow]
+
+
 class Correlation(Strict):
     symbols: list[str]
     matrix: list[list[float | None]]
@@ -216,7 +327,14 @@ class Risk(Strict):
     usage: Usage
     groups: list[GroupRow]
     min_lot: list[MinLotRow]
+    min_lot_balances: list[MinLotAtBalance]
     correlation: Correlation
+
+
+class PowerRow(Strict):
+    edge_r: float
+    trades: int
+    pass_rate: float = Field(ge=0, le=1)
 
 
 class Pending(Strict):
@@ -239,10 +357,20 @@ class Approvals(Strict):
     history: list[Decided]
 
 
+class Advisory(Strict):
+    id: str
+    symbol: str
+    action: Literal["pause"]
+    reason: str
+    issued_at: str
+    expires_at: str
+
+
 class Bridge(Strict):
     file: str
-    written: int
-    signals: list[dict[str, Any]]
+    heartbeat: str
+    kill_flag: bool
+    advisories: list[Advisory]
     note: str
 
 
@@ -255,17 +383,21 @@ class Report(Strict):
 class LogEntry(Strict):
     time: str
     agent_id: str
-    level: Literal["info", "warn", "error"]
+    level: Literal["info", "warn", "error", "alert"]
     msg: str
 
 
 class State(Strict):
     meta: Meta
+    picks_today: PicksToday
     pipeline: list[Stage]
     agents: list[Agent]
     research: list[Research]
+    self_tests: list[SelfTest]
+    context: Context
     checks: list[Check]
     risk: Risk
+    power: list[PowerRow] | None
     approvals: Approvals
     bridge: Bridge
     report: Report

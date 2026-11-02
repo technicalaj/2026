@@ -7,33 +7,11 @@ import numpy as np
 import pandas as pd
 
 from llm_trader.data.symbols import SymbolSpec
-from llm_trader.models import Signal
+from llm_trader.models import Signal, utc
+from llm_trader.risk.blackouts import Event, blackout_reasons
+from llm_trader.risk.limits import Limits
 
-
-@dataclass(frozen=True)
-class Limits:
-    risk_per_trade_pct: float = 1.0
-    max_open_risk_pct: float = 2.0
-    max_daily_loss_pct: float = 3.0
-    max_margin_use_pct: float = 50.0
-    max_positions_per_group: int = 1
-
-    @classmethod
-    def from_settings(cls, risk_cfg) -> "Limits":
-        return cls(**{name: getattr(risk_cfg, name) for name in cls.__dataclass_fields__})
-
-    def to_dict(self) -> dict:
-        return {name: getattr(self, name) for name in self.__dataclass_fields__}
-
-
-@dataclass(frozen=True)
-class Account:
-    balance: float
-    currency: str = "USD"
-    leverage: float = 30.0
-
-    def to_dict(self) -> dict:
-        return {"balance": float(self.balance), "currency": self.currency, "leverage": self.leverage}
+EPS = 1e-9
 
 
 @dataclass(frozen=True)
@@ -52,143 +30,213 @@ class Position:
     rule_id: str = ""
 
 
+@dataclass(frozen=True)
+class Entry:
+    symbol: str
+    time: pd.Timestamp
+    rule_id: str = ""
+
+
+@dataclass
+class Book:
+    equity: float
+    peak_equity: float | None = None
+    positions: list[Position] = field(default_factory=list)
+    entries: list[Entry] = field(default_factory=list)
+    daily_loss_pct: float = 0.0
+    weekly_loss_pct: float = 0.0
+    full_stop_streaks: dict[str, int] = field(default_factory=dict)
+    kill_switch_on: bool = False
+
+    @property
+    def peak(self) -> float:
+        return max(self.peak_equity or 0.0, self.equity)
+
+    @property
+    def drawdown_pct(self) -> float:
+        return (self.peak - self.equity) / self.peak * 100.0 if self.peak > 0 else 0.0
+
+
+@dataclass
+class Market:
+    now: pd.Timestamp
+    spread_points: float | None = None
+    median_spread_points: float | None = None
+    events: list[Event] = field(default_factory=list)
+    calendar_updated_at: pd.Timestamp | None = None
+    gap_buffer_pct: float = 0.0
+
+
 @dataclass
 class Decision:
     ok: bool
     reasons: list[str]
+    rules: list[str]
     lots: float | None = None
     risk_money: float | None = None
     risk_pct: float | None = None
     margin: float | None = None
     margin_pct: float | None = None
 
+    @property
+    def rule(self) -> str | None:
+        return self.rules[0] if self.rules else None
+
     def as_position(self, signal: Signal) -> Position:
         return Position(signal.symbol, int(signal.side), self.risk_money or 0.0, self.margin or 0.0, signal.rule_id)
+
+
+class _Findings:
+    def __init__(self):
+        self.rules: list[str] = []
+        self.reasons: list[str] = []
+
+    def add(self, rule: str, reason: str) -> None:
+        self.rules.append(rule)
+        self.reasons.append(reason)
+
+    def decision(self, **numbers) -> Decision:
+        return Decision(not self.rules, self.reasons, self.rules, **numbers)
 
 
 def _finite(value) -> bool:
     return value is not None and math.isfinite(float(value))
 
 
-def _direction_words(group: Group, direction: int) -> str:
-    return f"{'long' if direction > 0 else 'short'} {group.name}"
+def pct(money: float, base: float) -> float:
+    return money / base * 100.0
 
 
 @dataclass
 class RiskEngine:
-    account: Account
     limits: Limits
     groups: list[Group] = field(default_factory=list)
     specs: dict[str, SymbolSpec] = field(default_factory=dict)
 
-    def pct(self, money: float) -> float:
-        return money / self.account.balance * 100.0
-
-    def groups_for(self, symbol: str) -> list[Group]:
+    def clusters_for(self, symbol: str) -> list[Group]:
         found = [g for g in self.groups if symbol in g.members]
         return found or [Group(symbol, symbol, {symbol: 1})]
 
-    def daily_loss_breached(self, daily_loss_pct: float) -> bool:
-        return daily_loss_pct >= self.limits.max_daily_loss_pct
+    def size_lots(self, spec: SymbolSpec, stop_points: float, equity: float) -> float | None:
+        per_lot = spec.risk_money(stop_points, 1.0)
+        if per_lot <= 0 or equity <= 0:
+            return None
+        wanted = equity * self.limits.risk_per_trade_pct / 100.0 / per_lot
+        lots = math.floor(wanted / spec.lot_step + EPS) * spec.lot_step
+        if lots + EPS >= spec.min_lot:
+            return round(lots, 8)
+        min_lot_pct = pct(spec.risk_money(stop_points, spec.min_lot), equity)
+        return spec.min_lot if min_lot_pct <= self.limits.risk_per_trade_cap_pct + EPS else None
 
-    def check(self, signal: Signal, price: float, positions=(), *, kill_switch_on: bool = False, daily_loss_pct: float = 0.0) -> Decision:
-        positions = list(positions)
-        reasons = []
-        if kill_switch_on:
-            reasons.append("Kill switch is ON: nothing goes out.")
+    def check(self, signal: Signal, price: float, book: Book, market: Market) -> Decision:
+        found = _Findings()
+        if book.kill_switch_on:
+            found.add("kill_switch", "Kill switch is ON: no entries.")
         if not _finite(signal.stop):
-            return Decision(False, reasons + ["No stop-loss: every signal needs a stop from the first second."])
+            found.add("no_stop", "No stop-loss: every entry needs a stop from the first second.")
+            return found.decision()
         spec = self.specs.get(signal.symbol)
         if spec is None:
-            return Decision(False, reasons + [f"No symbol specification for {signal.symbol}, so its risk cannot be measured."])
-        if self.account.balance <= 0:
-            return Decision(False, reasons + ["The account balance must be above zero."])
+            found.add("no_spec", f"No symbol specification for {signal.symbol}, so its risk cannot be measured.")
+            return found.decision()
+        if book.equity <= 0:
+            found.add("no_equity", "Account equity must be above zero.")
+            return found.decision()
         if signal.side not in (1, -1) or (price - signal.stop) * signal.side <= 0:
-            return Decision(False, reasons + [f"The stop {signal.stop:g} is on the wrong side of the price {price:g}."])
-        if self.daily_loss_breached(daily_loss_pct):
-            reasons.append(f"Daily loss limit reached: {daily_loss_pct:.1f}% lost today (limit {self.limits.max_daily_loss_pct:g}%).")
+            found.add("stop_side", f"The stop {signal.stop:g} is on the wrong side of the price {price:g}.")
+            return found.decision()
 
-        lots = spec.min_lot
-        risk_money = spec.risk_money(abs(price - signal.stop) / spec.point, lots)
-        risk_pct = self.pct(risk_money)
-        if risk_pct > self.limits.risk_per_trade_pct + 1e-9:
-            reasons.append(
-                f"The minimum lot ({lots:g}) risks {risk_pct:.2f}% of the account with this stop; "
-                f"the limit is {self.limits.risk_per_trade_pct:g}% per trade."
-            )
-        margin = float(spec.margin_per_min_lot)
-        margin_pct = self.pct(sum(p.margin for p in positions) + margin)
-        if margin_pct > self.limits.max_margin_use_pct + 1e-9:
-            reasons.append(f"Margin would reach {margin_pct:.0f}% of the account; the limit is {self.limits.max_margin_use_pct:g}%.")
-        open_risk_pct = self.pct(sum(p.risk_money for p in positions) + risk_money)
-        if open_risk_pct > self.limits.max_open_risk_pct + 1e-9:
-            reasons.append(f"Open risk would reach {open_risk_pct:.2f}% of the account; the portfolio limit is {self.limits.max_open_risk_pct:g}%.")
-        for group in self.groups_for(signal.symbol):
-            direction = signal.side * group.members[signal.symbol]
-            same = [p for p in positions if p.symbol in group.members and p.side * group.members[p.symbol] == direction]
-            if len(same) >= self.limits.max_positions_per_group:
-                held = ", ".join(f"{'long' if p.side > 0 else 'short'} {p.symbol}" for p in same)
-                reasons.append(
-                    f"The {group.name} group already holds {len(same)} {_direction_words(group, direction)} position(s) ({held}); "
-                    f"correlated symbols count as one bet (limit {self.limits.max_positions_per_group})."
-                )
-        return Decision(not reasons, reasons, lots, risk_money, risk_pct, margin, margin_pct)
+        lim, equity = self.limits, book.equity
+        stop_points = abs(price - float(signal.stop)) / spec.point
+        lots = self.size_lots(spec, stop_points, equity)
+        if lots is None:
+            min_risk = spec.risk_money(stop_points, spec.min_lot)
+            found.add("risk_cap", f"The minimum lot ({spec.min_lot:g}) risks {pct(min_risk, equity):.2f}% of equity with this stop, "
+                                  f"above the {lim.risk_per_trade_cap_pct:g}% cap: skipped (never rounded up).")
+            return found.decision(risk_money=min_risk, risk_pct=pct(min_risk, equity))
+        risk_money = spec.risk_money(stop_points, lots)
+        held = list(book.positions)
+        open_money = sum(p.risk_money for p in held)
+        self._loss_stops(found, book, open_money + risk_money, market.gap_buffer_pct)
+        open_pct = pct(open_money + risk_money, equity)
+        if open_pct > lim.max_open_risk_pct + EPS:
+            found.add("open_risk_cap", f"Open risk would reach {open_pct:.2f}% of equity; the limit for all positions together "
+                                       f"is {lim.max_open_risk_pct:g}%.")
+        for group in self.clusters_for(signal.symbol):
+            cluster_pct = pct(sum(p.risk_money for p in held if p.symbol in group.members) + risk_money, equity)
+            if cluster_pct > lim.max_cluster_risk_pct + EPS:
+                found.add("cluster_cap", f"The {group.name} cluster would carry {cluster_pct:.2f}% risk (limit {lim.max_cluster_risk_pct:g}%): "
+                                         "correlated symbols count as one bet, with no credit for hedges.")
+        margin = spec.margin_per_min_lot * lots / spec.min_lot
+        margin_pct = pct(sum(p.margin for p in held) + margin, equity)
+        if margin_pct > lim.max_margin_use_pct + EPS:
+            found.add("margin_cap", f"Margin would reach {margin_pct:.0f}% of equity after the trade; the limit is {lim.max_margin_use_pct:g}%.")
+        if len(held) >= lim.max_open_positions:
+            found.add("max_positions", f"{len(held)} position(s) already open, hand trades included; the limit is {lim.max_open_positions}.")
+        self._activity(found, signal, book.entries, market.now)
+        self._spread(found, market)
+        streak = book.full_stop_streaks.get(signal.rule_id, 0)
+        if streak >= lim.pause_after_full_stops:
+            found.add("full_stop_streak", f"{signal.rule_id} hit {streak} full stops in a row, so the rule is paused "
+                                          f"(limit {lim.pause_after_full_stops}).")
+        for rule, reason in blackout_reasons(signal.symbol, market.now, lim.blackouts, market.events, market.calendar_updated_at):
+            found.add(rule, reason)
+        return found.decision(lots=lots, risk_money=risk_money, risk_pct=pct(risk_money, equity), margin=margin, margin_pct=margin_pct)
 
-    def usage(self, positions=(), daily_loss_pct: float = 0.0) -> dict:
-        positions = list(positions)
+    def _loss_stops(self, found: _Findings, book: Book, at_risk_money: float, gap_buffer_pct: float) -> None:
+        lim = self.limits
+        stops = (
+            ("overall_kill", "Overall kill", book.drawdown_pct, lim.overall_kill_pct, "from the equity peak", book.peak,
+             "the kill switch stays on until your YES"),
+            ("weekly_stop", "Weekly stop", book.weekly_loss_pct, lim.weekly_stop_pct, "this week", book.equity, "locked until your YES"),
+            ("daily_stop", "Daily stop", book.daily_loss_pct, lim.daily_stop_pct, "today", book.equity, "locked until the daily reset"),
+        )
+        for rule, label, lost, limit, period, base, lock in stops:
+            at_risk = pct(at_risk_money, base) + gap_buffer_pct
+            if lost >= limit - EPS:
+                found.add(rule, f"{label} reached: {lost:.1f}% lost {period} (limit {limit:g}%), {lock}.")
+            elif lost + at_risk > limit + EPS:
+                found.add(rule, f"{label} could be breached: {lost:.1f}% lost {period} plus {at_risk:.2f}% open, new and gap risk "
+                                f"is more than {limit:g}%.")
+
+    def _activity(self, found: _Findings, signal: Signal, entries: list[Entry], now) -> None:
+        lim, ts = self.limits, utc(now)
+        today = [e for e in entries if utc(e.time).date() == ts.date()]
+        if len(today) >= lim.max_entries_per_day:
+            found.add("entries_per_day", f"{len(today)} entries already today (UTC); the limit is {lim.max_entries_per_day} a day.")
+        last = max((utc(e.time) for e in entries if e.symbol == signal.symbol), default=None)
+        gap = pd.Timedelta(minutes=lim.min_minutes_between_entries_per_symbol)
+        if last is not None and ts - last < gap:
+            wait = (gap - (ts - last)) / pd.Timedelta(minutes=1)
+            found.add("symbol_cooldown", f"The last {signal.symbol} entry was at {last:%H:%M} UTC; one entry per symbol every "
+                                         f"{lim.min_minutes_between_entries_per_symbol} minutes ({wait:.0f} more to wait).")
+
+    def _spread(self, found: _Findings, market: Market) -> None:
+        spread, median, multiple = market.spread_points, market.median_spread_points, self.limits.spread_skip_multiple
+        if _finite(spread) and _finite(median) and median > 0 and spread > multiple * median + EPS:
+            found.add("spread", f"Spread {spread:g} points is more than {multiple:g}x this hour's median ({median:g}): skipped.")
+
+    def usage(self, book: Book) -> dict:
         return {
-            "open_risk_pct": round(self.pct(sum(p.risk_money for p in positions)), 3),
-            "margin_use_pct": round(self.pct(sum(p.margin for p in positions)), 3),
-            "daily_loss_pct": round(float(daily_loss_pct), 3),
-            "open_positions": len(positions),
+            "open_risk_pct": round(pct(sum(p.risk_money for p in book.positions), book.equity), 3),
+            "margin_use_pct": round(pct(sum(p.margin for p in book.positions), book.equity), 3),
+            "daily_loss_pct": round(float(book.daily_loss_pct), 3),
+            "open_positions": len(book.positions),
         }
 
-    def group_rows(self, positions=()) -> list[dict]:
-        positions = list(positions)
+    def group_rows(self, book: Book) -> list[dict]:
         rows = []
         for g in self.groups:
-            held = [p for p in positions if p.symbol in g.members]
+            held = [p for p in book.positions if p.symbol in g.members]
             rows.append({
                 "id": g.id,
                 "name": g.name,
                 "members": dict(g.members),
                 "positions": len(held),
-                "risk_pct": round(self.pct(sum(p.risk_money for p in held)), 3),
-                "limit_pct": round(self.limits.risk_per_trade_pct * self.limits.max_positions_per_group, 3),
+                "risk_pct": round(pct(sum(p.risk_money for p in held), book.equity), 3),
+                "limit_pct": float(self.limits.max_cluster_risk_pct),
             })
         return rows
-
-    def min_lot_row(self, symbol: str, median_stop_points: float | None) -> dict:
-        spec = self.specs[symbol]
-        margin_pct = self.pct(spec.margin_per_min_lot)
-        row = {
-            "symbol": symbol,
-            "min_lot": spec.min_lot,
-            "median_stop_points": None if median_stop_points is None else round(float(median_stop_points), 1),
-            "risk_at_min_lot": None,
-            "risk_pct": None,
-            "margin_at_min_lot": round(float(spec.margin_per_min_lot), 2),
-            "ok": None,
-            "note": "No trades yet to measure a typical stop.",
-        }
-        if median_stop_points is None:
-            return row
-        risk = spec.risk_money(median_stop_points)
-        risk_pct = self.pct(risk)
-        notes = []
-        if risk_pct > self.limits.risk_per_trade_pct + 1e-9:
-            notes.append(f"Minimum lot risks {risk_pct:.2f}% with the median stop, above the {self.limits.risk_per_trade_pct:g}% per-trade limit.")
-        if margin_pct > self.limits.max_margin_use_pct + 1e-9:
-            notes.append(f"One minimum-lot position needs {margin_pct:.0f}% of the account as margin (limit {self.limits.max_margin_use_pct:g}%).")
-        elif margin_pct > self.limits.max_margin_use_pct / 2:
-            notes.append(f"One minimum-lot position uses {margin_pct:.0f}% of the account as margin.")
-        row.update(
-            risk_at_min_lot=round(risk, 2),
-            risk_pct=round(risk_pct, 3),
-            ok=risk_pct <= self.limits.risk_per_trade_pct + 1e-9 and margin_pct <= self.limits.max_margin_use_pct + 1e-9,
-            note=" ".join(notes) or None,
-        )
-        return row
 
 
 def correlation_matrix(frames: dict[str, pd.DataFrame], days: int = 90, min_hours: int = 50) -> dict:
