@@ -2718,7 +2718,9 @@
   // ---------------------------------------------------------------- boot
 
   function boot() {
-    applyTheme(storedTheme());
+    const saved = storedTheme();
+    // An embedding page may already have set data-theme; only override it for a theme chosen here.
+    if (saved !== 'auto') applyTheme(saved);
     document.addEventListener('click', (e) => {
       if (!e.target.closest('.skip-link')) return;
       e.preventDefault();
